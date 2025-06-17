@@ -11,6 +11,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+type sortOrder int
+
+const (
+	byFlat sortOrder = iota
+	byCum
+	byName
+)
+
+func (s sortOrder) String() string {
+	return []string{"Flat", "Cumulative", "Name"}[s]
+}
+
 type viewMode int
 
 const (
@@ -37,6 +49,7 @@ type model struct {
 	profileData      *ProfileData
 	currentViewIndex int
 	mode             viewMode
+	sort             sortOrder
 
 	// UI components
 	mainList    list.Model
@@ -50,39 +63,47 @@ type model struct {
 
 func newModel(data *ProfileData) model {
 	styles := defaultStyles()
-
 	m := model{
 		profileData:      data,
 		currentViewIndex: 0,
 		mode:             sourceView,
+		sort:             byFlat,
 		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
 		source:           viewport.New(0, 0),
 		callersList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
 		calleesList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
 		styles:           styles,
 	}
-
-	m.mainList.Title = "Profiled Functions (Heaviest First)"
 	m.source.Style = styles.Source
 	m.callersList.Title = "Callers"
 	m.calleesList.Title = "Callees"
-
 	m.setActiveView()
 	return m
 }
 
-// setActiveView now populates the main list based on the chosen profile view.
+// setActiveView now just sets the title and calls our new sorting/updating function.
 func (m *model) setActiveView() {
 	currentView := m.profileData.Views[m.currentViewIndex]
 	m.mainList.Title = fmt.Sprintf("View: %s", currentView.Name)
+	m.resortAndSetList()
+}
 
+func (m *model) resortAndSetList() {
+	currentView := m.profileData.Views[m.currentViewIndex]
 	nodes := make([]*FuncNode, 0, len(currentView.Nodes))
 	for _, node := range currentView.Nodes {
 		nodes = append(nodes, node)
 	}
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].FlatValue > nodes[j].FlatValue
-	})
+
+	// Apply the current sort order
+	switch m.sort {
+	case byFlat:
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].FlatValue > nodes[j].FlatValue })
+	case byCum:
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].CumValue > nodes[j].CumValue })
+	case byName:
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	}
 
 	items := make([]list.Item, len(nodes))
 	for i, node := range nodes {
@@ -126,7 +147,7 @@ func (m *model) updateGraphLists(node *FuncNode) {
 	for callerNode := range node.In {
 		callerItems = append(callerItems, listItem{node: callerNode, unit: unit})
 	}
-	sort.Slice(callerItems, func(i, j int) bool { // Sort by name for consistency
+	sort.Slice(callerItems, func(i, j int) bool {
 		return callerItems[i].FilterValue() < callerItems[j].FilterValue()
 	})
 	m.callersList.SetItems(callerItems)
@@ -154,14 +175,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.mainList, cmd = m.mainList.Update(msg)
 
-		// --- NEW LOGIC IS HERE ---
-		// After updating the filter, if there's only one item left,
-		// it feels intuitive to have the child panes update automatically.
-		// We check if the number of filtered items is 1.
 		if len(m.mainList.VisibleItems()) == 1 {
 			m.updateChildPanes()
 		}
-		// --- END OF NEW LOGIC ---
 
 		return m, cmd
 	}
@@ -190,21 +206,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		// These keybindings are active only when not filtering.
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "t":
-			m.currentViewIndex = (m.currentViewIndex + 1) % len(m.profileData.Views)
-			m.setActiveView()
-			return m, nil
-		case "c":
-			if m.mode == sourceView {
-				m.mode = graphView
-			} else {
-				m.mode = sourceView
+		if m.mainList.FilterState() != list.Filtering {
+			switch msg.String() {
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			case "t":
+				m.currentViewIndex = (m.currentViewIndex + 1) % len(m.profileData.Views)
+				m.setActiveView()
+				return m, nil
+			case "c":
+				if m.mode == sourceView {
+					m.mode = graphView
+				} else {
+					m.mode = sourceView
+				}
+				return m, nil
+			case "s": // <-- NEW: Handle sort key
+				m.sort = (m.sort + 1) % 3 // Cycle through the 3 sort orders
+				m.resortAndSetList()
+				return m, nil
 			}
-			return m, nil
 		}
 	}
 
@@ -228,6 +249,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// View function now includes the sort order in the status bar.
 func (m model) View() string {
 	if !m.ready || m.profileData == nil {
 		return "Initializing..."
@@ -237,19 +259,13 @@ func (m model) View() string {
 	if m.mode == sourceView {
 		rightPane = m.styles.Source.Render(m.source.View())
 	} else {
-		// Vertically join the two lists for the graph view
-		rightPane = lipgloss.JoinVertical(lipgloss.Left,
-			m.callersList.View(),
-			m.calleesList.View(),
-		)
+		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
 	}
 
 	statusText := m.styles.Status.Render(
-		"↑/↓ nav | t view | c mode | / filter | q quit",
+		fmt.Sprintf("Sort: %s | ↑/↓ nav | t view | c mode | / filter | s sort | q quit", m.sort.String()),
 	)
-	panes := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.styles.List.Render(m.mainList.View()),
-		rightPane,
-	)
+
+	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
 	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, panes, statusText))
 }

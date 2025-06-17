@@ -144,7 +144,28 @@ func (m *model) updateGraphLists(node *FuncNode) {
 
 func (m model) Init() tea.Cmd { return nil }
 
+// model.go
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// If the list is filtering, we only want to pass keystrokes to it.
+	// We don't want our other keybindings (t, c, q) to be active.
+	if m.mainList.FilterState() == list.Filtering {
+		// Pass the message to the list and return.
+		var cmd tea.Cmd
+		m.mainList, cmd = m.mainList.Update(msg)
+
+		// --- NEW LOGIC IS HERE ---
+		// After updating the filter, if there's only one item left,
+		// it feels intuitive to have the child panes update automatically.
+		// We check if the number of filtered items is 1.
+		if len(m.mainList.VisibleItems()) == 1 {
+			m.updateChildPanes()
+		}
+		// --- END OF NEW LOGIC ---
+
+		return m, cmd
+	}
+
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
@@ -156,12 +177,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.mainList.SetSize(listWidth, paneHeight)
 		m.styles.List = m.styles.List.Width(listWidth).Height(paneHeight)
-
 		m.source.Width = rightPaneWidth
 		m.source.Height = paneHeight
 		m.styles.Source = m.styles.Source.Width(rightPaneWidth).Height(paneHeight)
-
-		// Size the caller/callee lists
 		graphListHeight := paneHeight / 2
 		m.callersList.SetSize(rightPaneWidth, graphListHeight)
 		m.calleesList.SetSize(rightPaneWidth, paneHeight-graphListHeight)
@@ -172,6 +190,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// These keybindings are active only when not filtering.
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -189,6 +208,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// This block handles updates for navigation and child panes.
+	// It's placed after the main switch to allow the list to process
+	// navigation keys that aren't captured above (like up/down arrows).
 	beforeIndex := m.mainList.Index()
 	m.mainList, _ = m.mainList.Update(msg)
 	if beforeIndex != m.mainList.Index() {
@@ -223,7 +245,7 @@ func (m model) View() string {
 	}
 
 	statusText := m.styles.Status.Render(
-		"↑/↓ nav | t view | c mode | q quit",
+		"↑/↓ nav | t view | c mode | / filter | q quit",
 	)
 	panes := lipgloss.JoinHorizontal(lipgloss.Top,
 		m.styles.List.Render(m.mainList.View()),

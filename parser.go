@@ -5,67 +5,124 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	"github.com/google/pprof/profile"
 )
 
-// FunctionProfile holds the processed data for a single function.
+// FunctionProfile holds the raw data for a function.
 type FunctionProfile struct {
 	Name      string
 	FileName  string
 	StartLine int
-	FlatValue int64 // The 'self' cost of the function
+	FlatValue int64
 }
 
-// ParseProfile now takes an io.Reader and correctly calculates Flat time.
-func ParseProfile(reader io.Reader) ([]FunctionProfile, error) {
+// ProfileView represents a single way to look at the data (e.g., CPU time, In-use space).
+type ProfileView struct {
+	Name      string
+	Functions []FunctionProfile
+}
+
+// ProfileData holds all the parsed views from a single pprof file.
+type ProfileData struct {
+	Views []*ProfileView
+}
+
+// formatValue intelligently formats a value based on its unit.
+func formatValue(value int64, unit string) string {
+	switch unit {
+	case "nanoseconds":
+		return fmt.Sprintf("%v", formatNanos(value))
+	case "bytes":
+		return fmt.Sprintf("%v", formatBytes(value))
+	default: // "count", "objects", etc.
+		return fmt.Sprintf("%d", value)
+	}
+}
+
+// ParsePprofFile reads an io.Reader and returns all available profile views.
+func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 	p, err := profile.Parse(reader)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse pprof data: %w", err)
 	}
 
-	// This map will aggregate flat values for each function.
-	funcMap := make(map[uint64]*FunctionProfile)
+	profileData := &ProfileData{}
 
-	// --- THIS IS THE CORRECTED LOGIC ---
-	for _, s := range p.Sample {
-		// A sample has a stack of locations. The first location (index 0)
-		// is the function that was actively running on the CPU at the time of the sample.
-		// This is the only location that contributes to "Flat" time.
-		if len(s.Location) > 0 {
-			location := s.Location[0] // Key change: Only look at the top of the stack.
+	// p.SampleType describes what each value in a sample means.
+	// For heap profiles, this will have multiple entries (inuse_space, alloc_objects, etc.).
+	for i, sampleType := range p.SampleType {
+		view := &ProfileView{
+			Name: fmt.Sprintf("%s (%s)", sampleType.Type, sampleType.Unit),
+		}
 
-			// A single location can have multiple lines due to inlining.
-			// We attribute the cost to the most specific function in that line.
-			if len(location.Line) > 0 {
-				line := location.Line[0]
-				function := line.Function
+		funcMap := make(map[uint64]*FunctionProfile)
 
-				// If we haven't seen this function before, create an entry for it.
-				if _, ok := funcMap[function.ID]; !ok {
-					funcMap[function.ID] = &FunctionProfile{
-						Name:      function.Name,
-						FileName:  function.Filename,
-						StartLine: int(line.Line),
+		for _, s := range p.Sample {
+			// Get the value for the *current* sample type we are processing.
+			val := s.Value[i]
+			if val == 0 {
+				continue // Skip samples that don't have a value for this type.
+			}
+
+			if len(s.Location) > 0 {
+				loc := s.Location[0]
+				if len(loc.Line) > 0 {
+					line := loc.Line[0]
+					fun := line.Function
+
+					if _, ok := funcMap[fun.ID]; !ok {
+						funcMap[fun.ID] = &FunctionProfile{
+							Name:      fun.Name,
+							FileName:  fun.Filename,
+							StartLine: int(line.Line),
+						}
 					}
+					funcMap[fun.ID].FlatValue += val
 				}
-				// Add the sample's value to this function's flat time.
-				// We assume the first value is the one we care about (e.g., cpu-time).
-				funcMap[function.ID].FlatValue += s.Value[0]
 			}
 		}
+
+		for _, f := range funcMap {
+			view.Functions = append(view.Functions, *f)
+		}
+
+		sort.Slice(view.Functions, func(j, k int) bool {
+			return view.Functions[j].FlatValue > view.Functions[k].FlatValue
+		})
+
+		profileData.Views = append(profileData.Views, view)
 	}
 
-	// Convert the map to a slice for sorting.
-	var functions []FunctionProfile
-	for _, f := range funcMap {
-		functions = append(functions, *f)
+	if len(profileData.Views) == 0 {
+		return nil, fmt.Errorf("no valid sample data found in profile")
 	}
 
-	// Sort functions by flat value, descending.
-	sort.Slice(functions, func(i, j int) bool {
-		return functions[i].FlatValue > functions[j].FlatValue
-	})
+	return profileData, nil
+}
 
-	return functions, nil
+// formatBytes converts bytes to a human-readable string (KB, MB, GB).
+func formatBytes(b int64) string {
+	if b == 0 {
+		return "0 B"
+	}
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func formatNanos(n int64) string {
+	if n == 0 {
+		return "0s"
+	}
+	d := time.Duration(n)
+	return d.String()
 }

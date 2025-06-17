@@ -1,3 +1,4 @@
+// main.go
 package main
 
 import (
@@ -19,36 +20,33 @@ func main() {
 
 	arg := os.Args[1]
 	var reader io.Reader
+	var closer io.Closer
 
 	if strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://") {
-		// It's a URL, fetch it
 		fmt.Println("Fetching profile from URL:", arg)
 		resp, err := http.Get(arg)
 		if err != nil {
 			log.Fatalf("Failed to fetch profile from URL: %v", err)
 		}
-		// The response body is an io.Reader! We can stream it.
 		reader = resp.Body
-		defer resp.Body.Close()
+		closer = resp.Body
 	} else {
-		// It's a file path
 		file, err := os.Open(arg)
 		if err != nil {
 			log.Fatalf("Failed to open profile file: %v", err)
 		}
 		reader = file
-		defer file.Close()
+		closer = file
 	}
+	defer closer.Close()
 
-	functions, err := ParseProfile(reader) // <-- Pass the reader
+	// Use the new parser
+	profileData, err := ParsePprofFile(reader)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if len(functions) == 0 {
-		log.Fatal("No function data found in profile.")
-	}
 
-	m := newModel(functions)
+	m := newModel(profileData) // Pass the full data object to the model
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	if err := p.Start(); err != nil {

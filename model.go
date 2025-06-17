@@ -3,7 +3,7 @@ package main
 
 import (
 	"fmt"
-	"strings"
+	"sort"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -11,72 +11,138 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// listItem represents a single, view-specific entry in our list.
+type viewMode int
+
+const (
+	sourceView viewMode = iota
+	graphView
+)
+
+// listItem now represents a FuncNode.
 type listItem struct {
-	prof        FunctionProfile
-	valueString string
+	node *FuncNode
+	unit string
 }
 
-func (i listItem) Title() string       { return i.prof.Name }
-func (i listItem) Description() string { return i.valueString }
-func (i listItem) FilterValue() string { return i.prof.Name }
+func (i listItem) Title() string { return i.node.Name }
+func (i listItem) Description() string {
+	return fmt.Sprintf("Flat: %s | Cum: %s",
+		formatValue(i.node.FlatValue, i.unit),
+		formatValue(i.node.CumValue, i.unit),
+	)
+}
+func (i listItem) FilterValue() string { return i.node.Name }
 
 type model struct {
 	profileData      *ProfileData
 	currentViewIndex int
-	list             list.Model
-	source           viewport.Model
-	styles           Styles
-	ready            bool
+	mode             viewMode
+
+	// UI components
+	mainList    list.Model
+	source      viewport.Model
+	callersList list.Model
+	calleesList list.Model
+
+	styles Styles
+	ready  bool
 }
 
 func newModel(data *ProfileData) model {
+	styles := defaultStyles()
+
 	m := model{
 		profileData:      data,
 		currentViewIndex: 0,
-		list:             list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		mode:             sourceView,
+		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
 		source:           viewport.New(0, 0),
-		styles:           defaultStyles(),
+		callersList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		calleesList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		styles:           styles,
 	}
+
+	m.mainList.Title = "Profiled Functions (Heaviest First)"
+	m.source.Style = styles.Source
+	m.callersList.Title = "Callers"
+	m.calleesList.Title = "Callees"
+
 	m.setActiveView()
-	m.source.Style = m.styles.Source
 	return m
 }
 
+// setActiveView now populates the main list based on the chosen profile view.
 func (m *model) setActiveView() {
 	currentView := m.profileData.Views[m.currentViewIndex]
-	m.list.Title = currentView.Name
+	m.mainList.Title = fmt.Sprintf("View: %s", currentView.Name)
 
-	// --- THIS BLOCK IS NOW CORRECTED ---
-	unit := "bytes" // Default
-	if name := currentView.Name; len(name) > 0 {
-		// Use the standard library's strings.Contains
-		if strings.Contains(name, "nanoseconds") {
-			unit = "nanoseconds"
-		} else if strings.Contains(name, "count") || strings.Contains(name, "objects") {
-			unit = "count"
-		}
+	nodes := make([]*FuncNode, 0, len(currentView.Nodes))
+	for _, node := range currentView.Nodes {
+		nodes = append(nodes, node)
 	}
-	// --- END OF CORRECTION ---
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].FlatValue > nodes[j].FlatValue
+	})
 
-	items := make([]list.Item, len(currentView.Functions))
-	for i, f := range currentView.Functions {
-		items[i] = listItem{
-			prof:        f,
-			valueString: fmt.Sprintf("Flat: %s", formatValue(f.FlatValue, unit)),
-		}
+	items := make([]list.Item, len(nodes))
+	for i, node := range nodes {
+		items[i] = listItem{node: node, unit: currentView.Unit}
 	}
-	m.list.SetItems(items)
-	// Reset the list's viewport and cursor to the top
-	m.list.ResetSelected()
-	m.list.Paginator.Page = 0
 
-	m.updateSourceView()
+	m.mainList.SetItems(items)
+	m.updateChildPanes()
 }
 
-func (m model) Init() tea.Cmd {
-	return nil
+// updateChildPanes updates the right-hand side based on the current mode and selection.
+func (m *model) updateChildPanes() {
+	selected, ok := m.mainList.SelectedItem().(listItem)
+	if !ok {
+		m.source.SetContent("No function selected.")
+		m.callersList.SetItems(nil)
+		m.calleesList.SetItems(nil)
+		return
+	}
+
+	// Update Source View
+	content := getHighlightedSource(selected.node.FileName, selected.node.StartLine)
+	m.source.SetContent(content)
+	halfViewportHeight := m.source.Height / 2
+	scrollPos := selected.node.StartLine - halfViewportHeight
+	if scrollPos < 0 {
+		scrollPos = 0
+	}
+	m.source.SetYOffset(scrollPos)
+
+	// Update Graph View (Callers/Callees)
+	m.updateGraphLists(selected.node)
 }
+
+// updateGraphLists populates the caller and callee lists.
+func (m *model) updateGraphLists(node *FuncNode) {
+	unit := m.profileData.Views[m.currentViewIndex].Unit
+
+	// Populate Callers
+	callerItems := make([]list.Item, 0, len(node.In))
+	for callerNode := range node.In {
+		callerItems = append(callerItems, listItem{node: callerNode, unit: unit})
+	}
+	sort.Slice(callerItems, func(i, j int) bool { // Sort by name for consistency
+		return callerItems[i].FilterValue() < callerItems[j].FilterValue()
+	})
+	m.callersList.SetItems(callerItems)
+
+	// Populate Callees
+	calleeItems := make([]list.Item, 0, len(node.Out))
+	for calleeNode := range node.Out {
+		calleeItems = append(calleeItems, listItem{node: calleeNode, unit: unit})
+	}
+	sort.Slice(calleeItems, func(i, j int) bool {
+		return calleeItems[i].FilterValue() < calleeItems[j].FilterValue()
+	})
+	m.calleesList.SetItems(calleeItems)
+}
+
+func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -85,58 +151,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		h, v := m.styles.Base.GetFrameSize()
 		listWidth := int(float64(msg.Width-h) * 0.4)
-		sourceWidth := msg.Width - h - listWidth
+		rightPaneWidth := msg.Width - h - listWidth
 		paneHeight := msg.Height - v - 3
 
-		m.list.SetSize(listWidth, paneHeight)
+		m.mainList.SetSize(listWidth, paneHeight)
 		m.styles.List = m.styles.List.Width(listWidth).Height(paneHeight)
-		m.styles.Source = m.styles.Source.Width(sourceWidth).Height(paneHeight)
-		m.source.Width = sourceWidth
+
+		m.source.Width = rightPaneWidth
 		m.source.Height = paneHeight
+		m.styles.Source = m.styles.Source.Width(rightPaneWidth).Height(paneHeight)
+
+		// Size the caller/callee lists
+		graphListHeight := paneHeight / 2
+		m.callersList.SetSize(rightPaneWidth, graphListHeight)
+		m.calleesList.SetSize(rightPaneWidth, paneHeight-graphListHeight)
 
 		if !m.ready {
 			m.ready = true
-			m.updateSourceView()
+			m.updateChildPanes()
 		}
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "t":
-			// Cycle to the next profile view
 			m.currentViewIndex = (m.currentViewIndex + 1) % len(m.profileData.Views)
 			m.setActiveView()
+			return m, nil
+		case "c":
+			if m.mode == sourceView {
+				m.mode = graphView
+			} else {
+				m.mode = sourceView
+			}
 			return m, nil
 		}
 	}
 
-	beforeIndex := m.list.Index()
-	var listCmd, sourceCmd tea.Cmd
-	m.list, listCmd = m.list.Update(msg)
-	m.source, sourceCmd = m.source.Update(msg)
-	cmds = append(cmds, listCmd, sourceCmd)
+	beforeIndex := m.mainList.Index()
+	m.mainList, _ = m.mainList.Update(msg)
+	if beforeIndex != m.mainList.Index() {
+		m.updateChildPanes()
+	}
 
-	if beforeIndex != m.list.Index() {
-		m.updateSourceView()
+	// Also update child lists if in graph view
+	if m.mode == graphView {
+		m.callersList, _ = m.callersList.Update(msg)
+		m.calleesList, _ = m.calleesList.Update(msg)
+	} else {
+		m.source, _ = m.source.Update(msg)
 	}
 
 	return m, tea.Batch(cmds...)
-}
-
-func (m *model) updateSourceView() {
-	selected, ok := m.list.SelectedItem().(listItem)
-	if !ok {
-		m.source.SetContent("No function selected.")
-		return
-	}
-	content := getHighlightedSource(selected.prof.FileName, selected.prof.StartLine)
-	m.source.SetContent(content)
-	halfViewportHeight := m.source.Height / 2
-	scrollPos := selected.prof.StartLine - halfViewportHeight
-	if scrollPos < 0 {
-		scrollPos = 0
-	}
-	m.source.SetYOffset(scrollPos)
 }
 
 func (m model) View() string {
@@ -144,12 +211,23 @@ func (m model) View() string {
 		return "Initializing..."
 	}
 
+	var rightPane string
+	if m.mode == sourceView {
+		rightPane = m.styles.Source.Render(m.source.View())
+	} else {
+		// Vertically join the two lists for the graph view
+		rightPane = lipgloss.JoinVertical(lipgloss.Left,
+			m.callersList.View(),
+			m.calleesList.View(),
+		)
+	}
+
 	statusText := m.styles.Status.Render(
-		fmt.Sprintf("Total Functions: %d | Use ↑/↓ to navigate, t to change view, q to quit", len(m.list.Items())),
+		"↑/↓ nav | t view | c mode | q quit",
 	)
 	panes := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.styles.List.Render(m.list.View()),
-		m.styles.Source.Render(m.source.View()),
+		m.styles.List.Render(m.mainList.View()),
+		rightPane,
 	)
 	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, panes, statusText))
 }

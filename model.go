@@ -32,12 +32,20 @@ const (
 
 // listItem now represents a FuncNode.
 type listItem struct {
-	node *FuncNode
-	unit string
+	node   *FuncNode
+	unit   string
+	styles *Styles
 }
 
 func (i listItem) Title() string { return i.node.Name }
 func (i listItem) Description() string {
+	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
+		// Diff mode
+		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
+		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
+		return fmt.Sprintf("Flat: %s | Cum: %s", flatStr, cumStr)
+	}
+	// Normal mode
 	return fmt.Sprintf("Flat: %s | Cum: %s",
 		formatValue(i.node.FlatValue, i.unit),
 		formatValue(i.node.CumValue, i.unit),
@@ -111,7 +119,8 @@ func (m *model) resortAndSetList() {
 
 	items := make([]list.Item, len(nodes))
 	for i, node := range nodes {
-		items[i] = listItem{node: node, unit: currentView.Unit}
+		// Pass the styles struct into the item
+		items[i] = listItem{node: node, unit: currentView.Unit, styles: &m.styles}
 	}
 
 	m.mainList.SetItems(items)
@@ -299,4 +308,22 @@ func (m model) View() string {
 
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
 	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, panes, statusText))
+}
+
+func formatDelta(value int64, unit string, s *Styles) string {
+	formattedVal := formatValue(abs(value), unit)
+	if value > 0 {
+		return s.DiffPositive.Render(fmt.Sprintf("+%s", formattedVal))
+	}
+	if value < 0 {
+		return s.DiffNegative.Render(fmt.Sprintf("-%s", formattedVal))
+	}
+	return formattedVal // No change
+}
+
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

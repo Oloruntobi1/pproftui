@@ -26,6 +26,9 @@ type FuncNode struct {
 	FlatValue int64
 	CumValue  int64 // Cumulative value (this function + children)
 
+	FlatDelta int64
+	CumDelta  int64
+
 	// Graph structure
 	In  map[*FuncNode]int64 // Callers: map[caller]edge_weight
 	Out map[*FuncNode]int64 // Callees: map[callee]edge_weight
@@ -162,4 +165,79 @@ func formatNanos(n int64) string {
 	}
 	d := time.Duration(n)
 	return d.String()
+}
+
+func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
+	// Parse both profiles first
+	beforeData, err := ParsePprofFile(beforeReader)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse 'before' profile: %w", err)
+	}
+	afterData, err := ParsePprofFile(afterReader)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse 'after' profile: %w", err)
+	}
+
+	// For simplicity, we'll diff the first view of each profile.
+	// A more advanced tool might let you select which views to diff.
+	if len(beforeData.Views) == 0 || len(afterData.Views) == 0 {
+		return nil, fmt.Errorf("one or both profiles have no views to diff")
+	}
+
+	beforeView := beforeData.Views[0]
+	afterView := afterData.Views[0]
+
+	// Create a new "diff" view
+	diffView := &ProfileView{
+		Name:  fmt.Sprintf("Diff: %s", afterView.Name),
+		Unit:  afterView.Unit,
+		Nodes: make(map[uint64]*FuncNode),
+	}
+
+	// Create a map of the 'before' nodes for easy lookup
+	beforeNodesMap := make(map[string]*FuncNode)
+	for _, node := range beforeView.Nodes {
+		beforeNodesMap[node.Name] = node
+	}
+
+	// Iterate through the 'after' nodes and calculate the diff
+	for _, afterNode := range afterView.Nodes {
+		diffNode := &FuncNode{ // Copy the 'after' data
+			ID:        afterNode.ID,
+			Name:      afterNode.Name,
+			FileName:  afterNode.FileName,
+			StartLine: afterNode.StartLine,
+			FlatValue: afterNode.FlatValue,
+			CumValue:  afterNode.CumValue,
+			// Deltas will be calculated next
+		}
+
+		if beforeNode, ok := beforeNodesMap[afterNode.Name]; ok {
+			// The function exists in both, calculate the delta
+			diffNode.FlatDelta = afterNode.FlatValue - beforeNode.FlatValue
+			diffNode.CumDelta = afterNode.CumValue - beforeNode.CumValue
+			// Remove from map to find what's left (disappeared functions)
+			delete(beforeNodesMap, afterNode.Name)
+		} else {
+			// Function is new in 'after' profile
+			diffNode.FlatDelta = afterNode.FlatValue
+			diffNode.CumDelta = afterNode.CumValue
+		}
+		diffView.Nodes[diffNode.ID] = diffNode
+	}
+
+	// Any remaining nodes in beforeNodesMap have disappeared in the 'after' profile
+	for _, beforeNode := range beforeNodesMap {
+		diffNode := &FuncNode{
+			Name:      beforeNode.Name,
+			FileName:  beforeNode.FileName,
+			StartLine: beforeNode.StartLine,
+			FlatDelta: -beforeNode.FlatValue, // Show as a negative value
+			CumDelta:  -beforeNode.CumValue,
+		}
+		diffView.Nodes[beforeNode.ID] = diffNode
+	}
+
+	// We'll return a ProfileData object with just our single diff view
+	return &ProfileData{Views: []*ProfileView{diffView}}, nil
 }

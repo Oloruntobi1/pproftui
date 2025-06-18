@@ -1,3 +1,4 @@
+// main.go
 package main
 
 import (
@@ -13,54 +14,66 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: tui-profiler <path/to/profile.pprof | http://host/path/to/profile>")
+		fmt.Println("Usage:")
+		fmt.Println("  tui-profiler <profile_file_or_url>")
+		fmt.Println("  tui-profiler <before_profile> <after_profile>")
 		os.Exit(1)
 	}
 
-	arg := os.Args[1]
-	var reader io.Reader
-	var closer io.Closer // We need to manage closing the connection or file
+	if len(os.Args) == 2 {
+		// Single profile mode
+		reader, closer := getReaderForArg(os.Args[1])
+		defer closer.Close()
+		profileData, err := ParsePprofFile(reader)
+		if err != nil {
+			log.Fatal(err)
+		}
+		m := newModel(profileData)
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		if err := p.Start(); err != nil {
+			log.Fatal("Error running program:", err)
+		}
+	} else if len(os.Args) == 3 {
+		// Diff mode
+		fmt.Println("Starting in diff mode...")
+		readerBefore, closerBefore := getReaderForArg(os.Args[1])
+		defer closerBefore.Close()
+		readerAfter, closerAfter := getReaderForArg(os.Args[2])
+		defer closerAfter.Close()
 
+		diffData, err := DiffPprofFiles(readerBefore, readerAfter)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// We can reuse our existing model, as it just needs a ProfileData object
+		m := newModel(diffData)
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		if err := p.Start(); err != nil {
+			log.Fatal("Error running program:", err)
+		}
+	} else {
+		log.Fatal("Invalid number of arguments.")
+	}
+}
+
+// getReaderForArg is a helper to avoid code duplication.
+func getReaderForArg(arg string) (io.Reader, io.Closer) {
 	if strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://") {
-		// It's a URL. Fetch the profile data over the network.
-		fmt.Println("Connecting to live profile endpoint...")
-		fmt.Println("Profiling for the duration specified in the URL (e.g., ?seconds=5)...")
-
+		fmt.Println("Fetching profile from:", arg)
 		resp, err := http.Get(arg)
 		if err != nil {
 			log.Fatalf("Failed to fetch profile from URL: %v", err)
 		}
-
 		if resp.StatusCode != http.StatusOK {
-			log.Fatalf("Failed to fetch profile: endpoint returned status %s", resp.Status)
+			body, _ := io.ReadAll(resp.Body)
+			log.Fatalf("Endpoint returned status %s: %s", resp.Status, string(body))
 		}
-
-		fmt.Println("Profile data received. Analyzing...")
-		reader = resp.Body
-		closer = resp.Body // The response body needs to be closed
-	} else {
-		// It's a file path. Open it from the local disk.
-		file, err := os.Open(arg)
-		if err != nil {
-			log.Fatalf("Failed to open profile file: %v", err)
-		}
-		reader = file
-		closer = file // The file needs to be closed
+		return resp.Body, resp.Body
 	}
 
-	// Make sure we close the file or the HTTP body when main exits.
-	defer closer.Close()
-
-	// Our smart parser just takes the reader and doesn't care where it came from.
-	profileData, err := ParsePprofFile(reader)
+	file, err := os.Open(arg)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to open profile file: %v", err)
 	}
-
-	m := newModel(profileData)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-
-	if err := p.Start(); err != nil {
-		log.Fatal("Error running program:", err)
-	}
+	return file, file
 }

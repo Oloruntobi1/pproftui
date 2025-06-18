@@ -7,6 +7,8 @@ type Styles struct {
 	List,
 	Source,
 	Status lipgloss.Style
+	DiffPositive,
+	DiffNegative lipgloss.Style
 }
 
 func defaultStyles() Styles {
@@ -18,5 +20,7 @@ func defaultStyles() Styles {
 		Background(lipgloss.Color("236")).
 		Foreground(lipgloss.Color("250")).
 		Padding(0, 1)
+	s.DiffPositive = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // Green
+	s.DiffNegative = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // Red
 	return s
 }

@@ -35,23 +35,32 @@ const (
 
 // listItem now represents a FuncNode.
 type listItem struct {
-	node   *FuncNode
-	unit   string
-	styles *Styles
+	node       *FuncNode
+	unit       string
+	styles     *Styles
+	TotalValue int64
 }
 
 func (i listItem) Title() string { return i.node.Name }
 func (i listItem) Description() string {
 	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
-		// Diff mode
+		// Diff mode - percentages are less meaningful here, so let's keep it clean.
 		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
 		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
 		return fmt.Sprintf("Flat: %s | Cum: %s", flatStr, cumStr)
 	}
-	// Normal mode
-	return fmt.Sprintf("Flat: %s | Cum: %s",
-		formatValue(i.node.FlatValue, i.unit),
-		formatValue(i.node.CumValue, i.unit),
+
+	var flatPercent, cumPercent float64
+	if i.TotalValue > 0 {
+		flatPercent = (float64(i.node.FlatValue) / float64(i.TotalValue)) * 100
+		cumPercent = (float64(i.node.CumValue) / float64(i.TotalValue)) * 100
+	}
+
+	flatStr := formatValue(i.node.FlatValue, i.unit)
+	cumStr := formatValue(i.node.CumValue, i.unit)
+
+	return fmt.Sprintf("Flat: %-8s (%5.1f%%) | Cum: %-8s (%5.1f%%)",
+		flatStr, flatPercent, cumStr, cumPercent,
 	)
 }
 func (i listItem) FilterValue() string { return i.node.Name }
@@ -124,8 +133,13 @@ func (m *model) resortAndSetList() {
 
 	items := make([]list.Item, len(nodes))
 	for i, node := range nodes {
-		// Pass the styles struct into the item
-		items[i] = listItem{node: node, unit: currentView.Unit, styles: &m.styles}
+		// Pass the view's TotalValue into each item we create.
+		items[i] = listItem{
+			node:       node,
+			unit:       currentView.Unit,
+			styles:     &m.styles,
+			TotalValue: currentView.TotalValue,
+		}
 	}
 
 	m.mainList.SetItems(items)
@@ -250,9 +264,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mainList.FilterState() != list.Filtering {
 			switch msg.String() {
 			case "h":
-				explanation := getExplanationForView(m.mainList.Title)
-				helpText := fmt.Sprintf("# %s\n\n%s", explanation.Title, explanation.Description)
-				m.helpView.SetContent(helpText)
+				// 1. Get the specific help for the current view.
+				viewExplanation := getExplanationForView(m.mainList.Title)
+
+				// 2. Get our new general help topics.
+				flatCumExplanation := explainerMap["flat_vs_cum"]
+				flameGraphExplanation := explainerMap["flamegraph"]
+
+				// 3. Build a comprehensive help text.
+				var helpBuilder strings.Builder
+				helpBuilder.WriteString(fmt.Sprintf("# %s\n\n%s\n\n", viewExplanation.Title, viewExplanation.Description))
+				helpBuilder.WriteString("---\n\n")
+				helpBuilder.WriteString(fmt.Sprintf("# %s\n\n%s\n\n", flatCumExplanation.Title, flatCumExplanation.Description))
+				helpBuilder.WriteString("---\n\n")
+				helpBuilder.WriteString(fmt.Sprintf("# %s\n\n%s", flameGraphExplanation.Title, flameGraphExplanation.Description))
+
+				m.helpView.SetContent(helpBuilder.String())
 				m.helpView.GotoTop()
 				m.showHelp = true
 				return m, nil

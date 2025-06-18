@@ -210,7 +210,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and check for keys to close it.
 		if msg, ok := msg.(tea.KeyMsg); ok {
 			switch msg.String() {
-			case "h", "q", "esc":
+			case "f1", "q", "esc":
 				m.showHelp = false
 			}
 		}
@@ -267,7 +267,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.mainList.FilterState() != list.Filtering {
 			switch msg.String() {
-			case "h":
+			case "f1":
 				// 1. Get the specific help for the current view.
 				viewExplanation := getExplanationForView(m.mainList.Title)
 
@@ -393,16 +393,16 @@ func (m model) View() string {
 	if m.mode == flameGraphView {
 		if m.zoomedFlameRoot != nil {
 			statusText = m.styles.Status.Render(
-				"h help | esc zoom out | f exit flame | t view | q quit",
+				"F1 help | esc zoom out | f exit flame | t view | q quit",
 			)
 		} else {
 			statusText = m.styles.Status.Render(
-				"h help | enter zoom in | f exit flame | t view | q quit",
+				"F1 help | enter zoom in | f exit flame | t view | q quit",
 			)
 		}
 	} else {
 		statusText = m.styles.Status.Render(
-			"h help | s sort | t view | c mode | f flame | q quit",
+			"F1 help | s sort | t view | c mode | f flame | q quit",
 		)
 	}
 

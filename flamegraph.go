@@ -8,13 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// A simple color palette for the flame graph
-var flameColors = []lipgloss.Color{
-	lipgloss.Color("196"), lipgloss.Color("202"), lipgloss.Color("208"),
-	lipgloss.Color("214"), lipgloss.Color("220"), lipgloss.Color("226"),
-	lipgloss.Color("154"), lipgloss.Color("118"), lipgloss.Color("82"),
-}
-
 // getColorForPercentage returns a color based on how "hot" a function is
 // Hot (high percentage) = red/orange, Cool (low percentage) = yellow/green
 func getColorForPercentage(percentage float64) lipgloss.Color {
@@ -68,16 +61,16 @@ func renderFlameNode(b *strings.Builder, node *FlameNode, depth, termWidth int, 
 
 	// Calculate percentage of total
 	percentage := float64(node.Value) / float64(totalValue) * 100
-	
+
 	// Pick a color based on "hotness" (percentage of total)
 	color := getColorForPercentage(percentage)
 	style := lipgloss.NewStyle().
 		Background(color).
 		Foreground(lipgloss.Color("232")) // Dark text for contrast
-	
+
 	// Create label with function name and percentage
 	labelText := fmt.Sprintf("%s (%.1f%%)", node.Name, percentage)
-	
+
 	// Truncate the label to fit the bar width
 	if len(labelText) > nodeWidth {
 		// Try just the function name if the full label is too long

@@ -30,7 +30,7 @@ func main() {
 		}
 		m := newModel(profileData)
 		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-		if err := p.Start(); err != nil {
+		if _, err := p.Run(); err != nil {
 			log.Fatal("Error running program:", err)
 		}
 	} else if len(os.Args) == 3 {
@@ -48,7 +48,7 @@ func main() {
 		// We can reuse our existing model, as it just needs a ProfileData object
 		m := newModel(diffData)
 		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-		if err := p.Start(); err != nil {
+		if _, err := p.Run(); err != nil {
 			log.Fatal("Error running program:", err)
 		}
 	} else {

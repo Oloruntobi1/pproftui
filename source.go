@@ -36,7 +36,7 @@ func getHighlightedSource(filePath string, targetLine int) string {
 		lineHeader := fmt.Sprintf("%4d | ", lineNumber)
 		if lineNumber == targetLine {
 			// Add an arrow to the target line
-			lineHeader = fmt.Sprintf("  -> | ")
+			lineHeader = "  -> | "
 		}
 		result.WriteString(lineHeader + line + "\n")
 	}

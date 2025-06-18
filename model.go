@@ -28,7 +28,7 @@ type viewMode int
 const (
 	sourceView viewMode = iota
 	graphView
-	flameGraphView // <-- NEW
+	flameGraphView
 )
 
 // listItem now represents a FuncNode.
@@ -262,7 +262,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sort = (m.sort + 1) % 3 // Cycle through the 3 sort orders
 				m.resortAndSetList()
 				return m, nil
-			case "f": // <-- NEW
+			case "f":
 				if m.mode == flameGraphView {
 					m.mode = sourceView // Toggle back to source view
 				} else {
@@ -290,10 +290,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.source, _ = m.source.Update(msg)
 	}
 
-	// else {
-	// 	m.source, _ = m.source.Update(msg)
-	// }
-
 	return m, tea.Batch(cmds...)
 }
 
@@ -320,10 +316,6 @@ func (m model) View() string {
 		rightPaneWidth := m.source.Width
 		rightPane = RenderFlameGraph(flameRoot, rightPaneWidth)
 	}
-
-	// statusText := m.styles.Status.Render(
-	// 	fmt.Sprintf("Sort: %s | h help | s sort | t view | c mode | / filter | q quit", m.sort.String()),
-	// )
 
 	statusText := m.styles.Status.Render(
 		"h help | s sort | t view | c mode | f flame | q quit",

@@ -10,6 +10,13 @@ import (
 	"github.com/google/pprof/profile"
 )
 
+// FlameNode represents a single function in a flame graph tree.
+type FlameNode struct {
+	Name     string
+	Value    int64
+	Children []*FlameNode
+}
+
 // FunctionProfile holds the raw data for a function.
 type FunctionProfile struct {
 	Name      string
@@ -255,15 +262,6 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 	}
 
 	return diffProfileData, nil
-}
-
-// parser.go
-
-// FlameNode represents a single function in a flame graph tree.
-type FlameNode struct {
-	Name     string
-	Value    int64
-	Children []*FlameNode
 }
 
 func BuildFlameGraph(p *profile.Profile, sampleIndex int) *FlameNode {

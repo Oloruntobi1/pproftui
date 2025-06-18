@@ -2,6 +2,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -39,10 +40,20 @@ func renderFlameNode(b *strings.Builder, node *FlameNode, depth, termWidth int, 
 		Background(color).
 		Foreground(lipgloss.Color("232")) // Dark text for contrast
 
-	// Truncate the function name to fit the bar width
-	labelText := node.Name
+	// Calculate percentage of total
+	percentage := float64(node.Value) / float64(totalValue) * 100
+	
+	// Create label with function name and percentage
+	labelText := fmt.Sprintf("%s (%.1f%%)", node.Name, percentage)
+	
+	// Truncate the label to fit the bar width
 	if len(labelText) > nodeWidth {
-		labelText = labelText[:nodeWidth]
+		// Try just the function name if the full label is too long
+		if len(node.Name) <= nodeWidth {
+			labelText = node.Name
+		} else {
+			labelText = labelText[:nodeWidth]
+		}
 	}
 
 	// Create the bar string

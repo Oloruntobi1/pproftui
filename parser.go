@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/pprof/profile"
@@ -171,7 +172,7 @@ func formatNanos(n int64) string {
 }
 
 func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
-	// Parse both profiles first
+	// Step 1: Parse both profiles completely.
 	beforeData, err := ParsePprofFile(beforeReader)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse 'before' profile: %w", err)
@@ -181,68 +182,79 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 		return nil, fmt.Errorf("could not parse 'after' profile: %w", err)
 	}
 
-	// For simplicity, we'll diff the first view of each profile.
-	// A more advanced tool might let you select which views to diff.
-	if len(beforeData.Views) == 0 || len(afterData.Views) == 0 {
-		return nil, fmt.Errorf("one or both profiles have no views to diff")
+	// Step 2: Find the profile types that exist in BOTH files.
+	// We'll use maps for efficient lookup.
+	beforeViewsMap := make(map[string]*ProfileView)
+	for _, v := range beforeData.Views {
+		// Use the base type (e.g., "inuse_space") as the key for matching.
+		baseName := strings.Split(v.Name, " ")[0]
+		beforeViewsMap[baseName] = v
 	}
 
-	beforeView := beforeData.Views[0]
-	afterView := afterData.Views[0]
+	diffProfileData := &ProfileData{} // This will hold our final diffed views.
 
-	// Create a new "diff" view
-	diffView := &ProfileView{
-		Name:  fmt.Sprintf("Diff: %s", afterView.Name),
-		Unit:  afterView.Unit,
-		Nodes: make(map[uint64]*FuncNode),
-	}
+	// Step 3: Iterate through the 'after' views and see if there's a match in 'before'.
+	for _, afterView := range afterData.Views {
+		baseName := strings.Split(afterView.Name, " ")[0]
+		beforeView, ok := beforeViewsMap[baseName]
 
-	// Create a map of the 'before' nodes for easy lookup
-	beforeNodesMap := make(map[string]*FuncNode)
-	for _, node := range beforeView.Nodes {
-		beforeNodesMap[node.Name] = node
-	}
-
-	// Iterate through the 'after' nodes and calculate the diff
-	for _, afterNode := range afterView.Nodes {
-		diffNode := &FuncNode{ // Copy the 'after' data
-			ID:        afterNode.ID,
-			Name:      afterNode.Name,
-			FileName:  afterNode.FileName,
-			StartLine: afterNode.StartLine,
-			FlatValue: afterNode.FlatValue,
-			CumValue:  afterNode.CumValue,
-			// Deltas will be calculated next
+		if !ok {
+			// This profile type doesn't exist in the 'before' file, so we can't diff it.
+			continue
 		}
 
-		if beforeNode, ok := beforeNodesMap[afterNode.Name]; ok {
-			// The function exists in both, calculate the delta
-			diffNode.FlatDelta = afterNode.FlatValue - beforeNode.FlatValue
-			diffNode.CumDelta = afterNode.CumValue - beforeNode.CumValue
-			// Remove from map to find what's left (disappeared functions)
-			delete(beforeNodesMap, afterNode.Name)
-		} else {
-			// Function is new in 'after' profile
-			diffNode.FlatDelta = afterNode.FlatValue
-			diffNode.CumDelta = afterNode.CumValue
+		// We have a match! Let's create a diff view.
+		diffView := &ProfileView{
+			Name:  fmt.Sprintf("Diff: %s", afterView.Name),
+			Unit:  afterView.Unit,
+			Nodes: make(map[uint64]*FuncNode),
 		}
-		diffView.Nodes[diffNode.ID] = diffNode
+
+		// Create a lookup map for the 'before' nodes within this specific view.
+		beforeNodesMap := make(map[string]*FuncNode)
+		for _, node := range beforeView.Nodes {
+			beforeNodesMap[node.Name] = node
+		}
+
+		// Calculate the diff for each function in the 'after' view.
+		for _, afterNode := range afterView.Nodes {
+			diffNode := &FuncNode{
+				ID: afterNode.ID, Name: afterNode.Name, FileName: afterNode.FileName,
+				StartLine: afterNode.StartLine, FlatValue: afterNode.FlatValue, CumValue: afterNode.CumValue,
+			}
+
+			if beforeNode, ok := beforeNodesMap[afterNode.Name]; ok {
+				// Function exists in both, calculate delta.
+				diffNode.FlatDelta = afterNode.FlatValue - beforeNode.FlatValue
+				diffNode.CumDelta = afterNode.CumValue - beforeNode.CumValue
+				delete(beforeNodesMap, afterNode.Name) // Mark as processed
+			} else {
+				// Function is new in 'after' profile.
+				diffNode.FlatDelta = afterNode.FlatValue
+				diffNode.CumDelta = afterNode.CumValue
+			}
+			diffView.Nodes[diffNode.ID] = diffNode
+		}
+
+		// Add any functions that disappeared from the 'before' profile.
+		for _, beforeNode := range beforeNodesMap {
+			diffNode := &FuncNode{
+				ID: beforeNode.ID, Name: beforeNode.Name, FileName: beforeNode.FileName,
+				StartLine: beforeNode.StartLine,
+				FlatDelta: -beforeNode.FlatValue, // Negative delta
+				CumDelta:  -beforeNode.CumValue,
+			}
+			diffView.Nodes[diffNode.ID] = diffNode
+		}
+		// Add the completed diff view to our results.
+		diffProfileData.Views = append(diffProfileData.Views, diffView)
 	}
 
-	// Any remaining nodes in beforeNodesMap have disappeared in the 'after' profile
-	for _, beforeNode := range beforeNodesMap {
-		diffNode := &FuncNode{
-			Name:      beforeNode.Name,
-			FileName:  beforeNode.FileName,
-			StartLine: beforeNode.StartLine,
-			FlatDelta: -beforeNode.FlatValue, // Show as a negative value
-			CumDelta:  -beforeNode.CumValue,
-		}
-		diffView.Nodes[beforeNode.ID] = diffNode
+	if len(diffProfileData.Views) == 0 {
+		return nil, fmt.Errorf("no common profile types found to diff between the two files")
 	}
 
-	// We'll return a ProfileData object with just our single diff view
-	return &ProfileData{Views: []*ProfileView{diffView}}, nil
+	return diffProfileData, nil
 }
 
 // parser.go

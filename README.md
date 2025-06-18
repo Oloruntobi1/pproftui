@@ -64,9 +64,11 @@ For **live profiling**:
 
 ---
 
-## More Screenshots?
+## 📸 Screenshots
 
-Check the `screenshots` folder for screenshots.
+![pproftui screenshot](screenshots/cpu_nanoseconds_view.png)
+
+Check the `screenshots` folder for more.
 
 ---
 

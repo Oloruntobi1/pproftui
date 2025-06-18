@@ -1,4 +1,4 @@
-module github.com/Oloruntobi1/tui-profiler
+module github.com/Oloruntobi1/pproftui
 
 go 1.24.3
 

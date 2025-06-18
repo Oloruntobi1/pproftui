@@ -57,8 +57,10 @@ type model struct {
 	callersList list.Model
 	calleesList list.Model
 
-	styles Styles
-	ready  bool
+	styles   Styles
+	ready    bool
+	showHelp bool
+	helpView viewport.Model
 }
 
 func newModel(data *ProfileData) model {
@@ -68,6 +70,8 @@ func newModel(data *ProfileData) model {
 		currentViewIndex: 0,
 		mode:             sourceView,
 		sort:             byFlat,
+		helpView:         viewport.New(0, 0),
+		showHelp:         false,
 		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
 		source:           viewport.New(0, 0),
 		callersList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
@@ -166,8 +170,23 @@ func (m *model) updateGraphLists(node *FuncNode) {
 func (m model) Init() tea.Cmd { return nil }
 
 // model.go
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var cmds []tea.Cmd
+	if m.showHelp {
+		// If help is showing, all we do is pass messages to its viewport for scrolling,
+		// and check for keys to close it.
+		if msg, ok := msg.(tea.KeyMsg); ok {
+			switch msg.String() {
+			case "h", "q", "esc":
+				m.showHelp = false
+			}
+		}
+		// Update the help viewport. This will handle scrolling.
+		m.helpView, cmd = m.helpView.Update(msg)
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+	}
 	// If the list is filtering, we only want to pass keystrokes to it.
 	// We don't want our other keybindings (t, c, q) to be active.
 	if m.mainList.FilterState() == list.Filtering {
@@ -181,8 +200,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, cmd
 	}
-
-	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -200,6 +217,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.callersList.SetSize(rightPaneWidth, graphListHeight)
 		m.calleesList.SetSize(rightPaneWidth, paneHeight-graphListHeight)
 
+		m.helpView.Width = msg.Width - h
+		m.helpView.Height = paneHeight
+
 		if !m.ready {
 			m.ready = true
 			m.updateChildPanes()
@@ -208,6 +228,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.mainList.FilterState() != list.Filtering {
 			switch msg.String() {
+			case "h":
+				explanation := getExplanationForView(m.mainList.Title)
+				helpText := fmt.Sprintf("# %s\n\n%s", explanation.Title, explanation.Description)
+				m.helpView.SetContent(helpText)
+				m.helpView.GotoTop()
+				m.showHelp = true
+				return m, nil
 			case "ctrl+c", "q":
 				return m, tea.Quit
 			case "t":
@@ -221,7 +248,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.mode = sourceView
 				}
 				return m, nil
-			case "s": // <-- NEW: Handle sort key
+			case "s":
 				m.sort = (m.sort + 1) % 3 // Cycle through the 3 sort orders
 				m.resortAndSetList()
 				return m, nil
@@ -251,6 +278,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View function now includes the sort order in the status bar.
 func (m model) View() string {
+	if m.showHelp {
+		return m.styles.Base.Render(m.helpView.View())
+	}
+
 	if !m.ready || m.profileData == nil {
 		return "Initializing..."
 	}
@@ -263,7 +294,7 @@ func (m model) View() string {
 	}
 
 	statusText := m.styles.Status.Render(
-		fmt.Sprintf("Sort: %s | ↑/↓ nav | t view | c mode | / filter | s sort | q quit", m.sort.String()),
+		fmt.Sprintf("Sort: %s | h help | s sort | t view | c mode | / filter | q quit", m.sort.String()),
 	)
 
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)

@@ -79,6 +79,9 @@ type model struct {
 	callersList list.Model
 	calleesList list.Model
 
+	// Flamegraph zoom
+	zoomedFlameRoot *FlameNode // Current zoom root (nil = full view)
+
 	styles   Styles
 	ready    bool
 	showHelp bool
@@ -304,10 +307,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "f":
 				if m.mode == flameGraphView {
 					m.mode = sourceView // Toggle back to source view
+					m.zoomedFlameRoot = nil // Reset zoom when exiting flamegraph
 				} else {
 					m.mode = flameGraphView
 				}
 				return m, nil
+			case "enter":
+				if m.mode == flameGraphView {
+					// Zoom into the selected function from the main list
+					selected, ok := m.mainList.SelectedItem().(listItem)
+					if ok {
+						// Find this function in the flamegraph
+						currentViewIndex := m.currentViewIndex
+						flameRoot := BuildFlameGraph(m.profileData.RawPprof, currentViewIndex)
+						if targetNode := findNodeByName(flameRoot, selected.node.Name); targetNode != nil {
+							m.zoomedFlameRoot = targetNode
+						}
+					}
+					return m, nil
+				}
+			case "esc":
+				if m.mode == flameGraphView && m.zoomedFlameRoot != nil {
+					// Zoom out to full view
+					m.zoomedFlameRoot = nil
+					return m, nil
+				}
 			}
 		}
 	}
@@ -353,14 +377,34 @@ func (m model) View() string {
 	} else {
 		currentViewIndex := m.currentViewIndex
 		flameRoot := BuildFlameGraph(m.profileData.RawPprof, currentViewIndex)
+		
+		// Use zoomed root if we're zoomed in
+		displayRoot := flameRoot
+		if m.zoomedFlameRoot != nil {
+			displayRoot = m.zoomedFlameRoot
+		}
+		
 		rightPaneWidth := m.source.Width
-		rightPane = RenderFlameGraph(flameRoot, rightPaneWidth)
+		rightPane = RenderFlameGraph(displayRoot, rightPaneWidth)
 	}
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
 
-	statusText := m.styles.Status.Render(
-		"h help | s sort | t view | c mode | f flame | q quit",
-	)
+	var statusText string
+	if m.mode == flameGraphView {
+		if m.zoomedFlameRoot != nil {
+			statusText = m.styles.Status.Render(
+				"h help | esc zoom out | f exit flame | t view | q quit",
+			)
+		} else {
+			statusText = m.styles.Status.Render(
+				"h help | enter zoom in | f exit flame | t view | q quit",
+			)
+		}
+	} else {
+		statusText = m.styles.Status.Render(
+			"h help | s sort | t view | c mode | f flame | q quit",
+		)
+	}
 
 	// 4. Join them all vertically
 	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, header, panes, statusText))

@@ -34,6 +34,19 @@ func getColorForPercentage(percentage float64) lipgloss.Color {
 	}
 }
 
+// findNodeByName searches for a node with the given name in the flame graph
+func findNodeByName(root *FlameNode, targetName string) *FlameNode {
+	if root.Name == targetName {
+		return root
+	}
+	for _, child := range root.Children {
+		if found := findNodeByName(child, targetName); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
 // RenderFlameGraph takes the root node and total width and returns a rendered string.
 func RenderFlameGraph(root *FlameNode, width int) string {
 	if root.Value == 0 {

@@ -28,6 +28,7 @@ type viewMode int
 const (
 	sourceView viewMode = iota
 	graphView
+	flameGraphView // <-- NEW
 )
 
 // listItem now represents a FuncNode.
@@ -261,6 +262,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sort = (m.sort + 1) % 3 // Cycle through the 3 sort orders
 				m.resortAndSetList()
 				return m, nil
+			case "f": // <-- NEW
+				if m.mode == flameGraphView {
+					m.mode = sourceView // Toggle back to source view
+				} else {
+					m.mode = flameGraphView
+				}
+				return m, nil
 			}
 		}
 	}
@@ -278,9 +286,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.mode == graphView {
 		m.callersList, _ = m.callersList.Update(msg)
 		m.calleesList, _ = m.calleesList.Update(msg)
-	} else {
+	} else if m.mode == sourceView {
 		m.source, _ = m.source.Update(msg)
 	}
+
+	// else {
+	// 	m.source, _ = m.source.Update(msg)
+	// }
 
 	return m, tea.Batch(cmds...)
 }
@@ -291,19 +303,30 @@ func (m model) View() string {
 		return m.styles.Base.Render(m.helpView.View())
 	}
 
-	if !m.ready || m.profileData == nil {
+	if !m.ready {
 		return "Initializing..."
 	}
 
 	var rightPane string
 	if m.mode == sourceView {
 		rightPane = m.styles.Source.Render(m.source.View())
-	} else {
+	} else if m.mode == graphView {
 		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
+	} else { // --- NEW: Render the flame graph ---
+		// We'll build the flame graph for the current profile view
+		currentViewIndex := m.currentViewIndex
+		flameRoot := BuildFlameGraph(m.profileData.RawPprof, currentViewIndex)
+		// The right pane width is what we use for our graph width
+		rightPaneWidth := m.source.Width
+		rightPane = RenderFlameGraph(flameRoot, rightPaneWidth)
 	}
 
+	// statusText := m.styles.Status.Render(
+	// 	fmt.Sprintf("Sort: %s | h help | s sort | t view | c mode | / filter | q quit", m.sort.String()),
+	// )
+
 	statusText := m.styles.Status.Render(
-		fmt.Sprintf("Sort: %s | h help | s sort | t view | c mode | / filter | q quit", m.sort.String()),
+		"h help | s sort | t view | c mode | f flame | q quit",
 	)
 
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)

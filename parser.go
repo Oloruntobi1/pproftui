@@ -43,7 +43,8 @@ type ProfileView struct {
 
 // ProfileData holds all the parsed views from a single pprof file.
 type ProfileData struct {
-	Views []*ProfileView
+	Views    []*ProfileView
+	RawPprof *profile.Profile
 }
 
 // ParsePprofFile builds a full call graph for each profile type.
@@ -55,7 +56,9 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 		return nil, fmt.Errorf("could not parse pprof data: %w", err)
 	}
 
-	profileData := &ProfileData{}
+	profileData := &ProfileData{
+		RawPprof: p,
+	}
 
 	for i, sampleType := range p.SampleType {
 		view := &ProfileView{
@@ -240,4 +243,56 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 
 	// We'll return a ProfileData object with just our single diff view
 	return &ProfileData{Views: []*ProfileView{diffView}}, nil
+}
+
+// parser.go
+
+// FlameNode represents a single function in a flame graph tree.
+type FlameNode struct {
+	Name     string
+	Value    int64
+	Children []*FlameNode
+}
+
+func BuildFlameGraph(p *profile.Profile, sampleIndex int) *FlameNode {
+	root := &FlameNode{Name: "root", Value: 0}
+
+	for _, s := range p.Sample {
+		val := s.Value[sampleIndex]
+		if val == 0 {
+			continue
+		}
+
+		// The call stack is ordered from callee to caller.
+		// For a flame graph, we need to reverse it to be caller -> callee.
+		currentNode := root
+		root.Value += val
+
+		for i := len(s.Location) - 1; i >= 0; i-- {
+			loc := s.Location[i]
+			if len(loc.Line) == 0 {
+				continue
+			}
+			funcName := loc.Line[0].Function.Name
+
+			// Find if this function is already a child of the current node
+			var childNode *FlameNode
+			for _, child := range currentNode.Children {
+				if child.Name == funcName {
+					childNode = child
+					break
+				}
+			}
+
+			// If not found, create a new child node
+			if childNode == nil {
+				childNode = &FlameNode{Name: funcName}
+				currentNode.Children = append(currentNode.Children, childNode)
+			}
+
+			childNode.Value += val
+			currentNode = childNode // Move down the tree
+		}
+	}
+	return root
 }

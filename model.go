@@ -59,9 +59,10 @@ func (i listItem) Description() string {
 	flatStr := formatValue(i.node.FlatValue, i.unit)
 	cumStr := formatValue(i.node.CumValue, i.unit)
 
-	return fmt.Sprintf("Flat: %-8s (%5.1f%%) | Cum: %-8s (%5.1f%%)",
-		flatStr, flatPercent, cumStr, cumPercent,
-	)
+	valueAndPercentStr := fmt.Sprintf("%s (%.1f%%)", flatStr, flatPercent)
+	cumAndPercentStr := fmt.Sprintf("%s (%.1f%%)", cumStr, cumPercent)
+
+	return fmt.Sprintf("Flat: %s | Cum: %s", valueAndPercentStr, cumAndPercentStr)
 }
 func (i listItem) FilterValue() string { return i.node.Name }
 

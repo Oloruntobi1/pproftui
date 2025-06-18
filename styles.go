@@ -18,7 +18,7 @@ func defaultStyles() Styles {
 	s := Styles{}
 	s.Base = lipgloss.NewStyle().Padding(0, 1)
 
-	// --- NEW: Define the Header style ---
+	// Define the Header style
 	s.Header = lipgloss.NewStyle().
 		Padding(0, 1).
 		MarginBottom(1).

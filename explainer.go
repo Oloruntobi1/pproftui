@@ -89,13 +89,17 @@ Use this view to detect lock contention and pinpoint code that causes bottleneck
 	},
 
 	"flat_vs_cum": {
-		Title: "Flat vs. Cumulative (Cum)",
-		Description: `'Flat' time or memory is the cost of the function itself.  
-'Cumulative' (Cum) includes the cost of that function plus everything it called.
+		Title: "Flat vs. Cumulative (Cum) - Understanding Percentages",
+		Description: `'Flat' is what this function alone consumed.  
+'Cumulative' (Cum) is this function + everything it called.
+
+The percentages show:
+- Flat 40% = "Out of 100% total CPU/memory sampled, this function alone used 40%"
+- Cum 60% = "This function + all its callees together used 60% of the total"
 
 Analogy: A manager delegates a task.  
-- Flat time is the time the manager spends giving instructions.  
-- Cumulative time is how long the manager waits for the entire task (including sub-tasks) to complete.
+- Flat % = Time the manager spends giving instructions  
+- Cum % = Total time for the entire task (manager + all workers)
 
 Use this to distinguish whether a function is expensive on its own or calling other expensive functions.`,
 	},

@@ -4,6 +4,8 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -59,6 +61,7 @@ type model struct {
 	currentViewIndex int
 	mode             viewMode
 	sort             sortOrder
+	sourceInfo       string
 
 	// UI components
 	mainList    list.Model
@@ -72,11 +75,12 @@ type model struct {
 	helpView viewport.Model
 }
 
-func newModel(data *ProfileData) model {
+func newModel(data *ProfileData, sourceInfo string) model {
 	styles := defaultStyles()
 	m := model{
 		profileData:      data,
 		currentViewIndex: 0,
+		sourceInfo:       sourceInfo,
 		mode:             sourceView,
 		sort:             byFlat,
 		helpView:         viewport.New(0, 0),
@@ -214,9 +218,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		h, v := m.styles.Base.GetFrameSize()
+
+		header := m.renderDiagnosticHeader()
+		headerHeight := lipgloss.Height(header)
+
+		statusHeight := 1
+
+		paneHeight := msg.Height - v - headerHeight - statusHeight
+
 		listWidth := int(float64(msg.Width-h) * 0.4)
 		rightPaneWidth := msg.Width - h - listWidth
-		paneHeight := msg.Height - v - 3
 
 		m.mainList.SetSize(listWidth, paneHeight)
 		m.styles.List = m.styles.List.Width(listWidth).Height(paneHeight)
@@ -293,7 +304,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// View function now includes the sort order in the status bar.
 func (m model) View() string {
 	if m.showHelp {
 		return m.styles.Base.Render(m.helpView.View())
@@ -303,26 +313,29 @@ func (m model) View() string {
 		return "Initializing..."
 	}
 
+	// 1. Render the header
+	header := m.renderDiagnosticHeader()
+
+	// 2. Render the middle panes
 	var rightPane string
 	if m.mode == sourceView {
 		rightPane = m.styles.Source.Render(m.source.View())
 	} else if m.mode == graphView {
 		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
-	} else { // --- NEW: Render the flame graph ---
-		// We'll build the flame graph for the current profile view
+	} else {
 		currentViewIndex := m.currentViewIndex
 		flameRoot := BuildFlameGraph(m.profileData.RawPprof, currentViewIndex)
-		// The right pane width is what we use for our graph width
 		rightPaneWidth := m.source.Width
 		rightPane = RenderFlameGraph(flameRoot, rightPaneWidth)
 	}
+	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
 
 	statusText := m.styles.Status.Render(
 		"h help | s sort | t view | c mode | f flame | q quit",
 	)
 
-	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
-	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, panes, statusText))
+	// 4. Join them all vertically
+	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, header, panes, statusText))
 }
 
 func formatDelta(value int64, unit string, s *Styles) string {
@@ -333,7 +346,7 @@ func formatDelta(value int64, unit string, s *Styles) string {
 	if value < 0 {
 		return s.DiffNegative.Render(fmt.Sprintf("-%s", formattedVal))
 	}
-	return formattedVal // No change
+	return formattedVal
 }
 
 func abs(x int64) int64 {
@@ -341,4 +354,61 @@ func abs(x int64) int64 {
 		return -x
 	}
 	return x
+}
+
+func (m model) renderDiagnosticHeader() string {
+	if m.profileData == nil || len(m.profileData.Views) == 0 {
+		return ""
+	}
+
+	currentView := m.profileData.Views[m.currentViewIndex]
+	var diagnosticText string
+
+	// No change to Diff or CPU logic
+	if strings.HasPrefix(currentView.Name, "Diff:") {
+		diagnosticText = "💡 Comparing two profiles. Green (+) means more time/memory was used in the second profile. Red (-) means less."
+	} else if strings.Contains(currentView.Name, "cpu") || strings.Contains(currentView.Name, "samples") {
+		var cpuTimeView *ProfileView
+		for _, v := range m.profileData.Views {
+			if strings.Contains(v.Name, "cpu") && strings.Contains(v.Name, "nanoseconds") {
+				cpuTimeView = v
+				break
+			}
+		}
+		if cpuTimeView == nil {
+			cpuTimeView = currentView
+		}
+		profileDuration := m.profileData.DurationNanos
+		sampleDuration := cpuTimeView.TotalValue
+		if profileDuration > 0 && cpuTimeView.Unit == "nanoseconds" {
+			busyPercent := (float64(sampleDuration) / float64(profileDuration)) * 100
+			profDurStr := time.Duration(profileDuration).Round(time.Millisecond).String()
+			sampDurStr := time.Duration(sampleDuration).Round(time.Millisecond).String()
+			summary := fmt.Sprintf("Profiled for %s. Your program was busy for %s (%.1f%%).", profDurStr, sampDurStr, busyPercent)
+			var hint string
+			if busyPercent < 5.0 {
+				hint = "This program is likely I/O-bound or blocked. The CPU profile may not show the real bottleneck."
+			} else if busyPercent > 95.0 {
+				hint = "This program is CPU-bound. The functions below are the main contributors to CPU usage."
+			} else {
+				hint = "This program has a mix of CPU and I/O/blocking work."
+			}
+			diagnosticText = summary + "\n💡 " + hint
+		}
+	} else if strings.Contains(currentView.Name, "inuse") {
+		diagnosticText = "💡 Think 'Water Level'. This shows memory held *right now*. Use this view to find memory leaks."
+	} else if strings.Contains(currentView.Name, "alloc") {
+		diagnosticText = "💡 Think 'Total Water Poured'. This shows all memory allocated over time. Use this to find code causing GC pressure."
+	}
+
+	if diagnosticText == "" {
+		// If there's no special hint, just show the source info plainly without a clunky box.
+		return m.styles.Status.Render(m.sourceInfo)
+	}
+
+	var content strings.Builder
+	content.WriteString(m.sourceInfo)
+	content.WriteString("\n" + diagnosticText)
+
+	return m.styles.Header.Render(content.String())
 }

@@ -20,15 +20,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	var sourceInfo string
+
 	if len(os.Args) == 2 {
 		// Single profile mode
+		sourceInfo = fmt.Sprintf("Source: %s", os.Args[1])
 		reader, closer := getReaderForArg(os.Args[1])
 		defer closer.Close()
 		profileData, err := ParsePprofFile(reader)
 		if err != nil {
 			log.Fatal(err)
 		}
-		m := newModel(profileData)
+		m := newModel(profileData, sourceInfo)
 		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
 			log.Fatal("Error running program:", err)
@@ -36,6 +39,7 @@ func main() {
 	} else if len(os.Args) == 3 {
 		// Diff mode
 		fmt.Println("Starting in diff mode...")
+		sourceInfo = fmt.Sprintf("Diff: %s vs %s", os.Args[1], os.Args[2])
 		readerBefore, closerBefore := getReaderForArg(os.Args[1])
 		defer closerBefore.Close()
 		readerAfter, closerAfter := getReaderForArg(os.Args[2])
@@ -45,8 +49,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		// We can reuse our existing model, as it just needs a ProfileData object
-		m := newModel(diffData)
+		m := newModel(diffData, sourceInfo)
 		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		if _, err := p.Run(); err != nil {
 			log.Fatal("Error running program:", err)

@@ -42,22 +42,23 @@ type FuncNode struct {
 	Out map[*FuncNode]int64 // Callees: map[callee]edge_weight
 }
 
-// ProfileView now contains a graph of nodes.
+// ProfileView now contains a graph of nodes and the total value.
 type ProfileView struct {
-	Name  string
-	Unit  string
-	Nodes map[uint64]*FuncNode // All nodes in this view, indexed by function ID
+	Name       string
+	Unit       string
+	TotalValue int64                // The sum of all samples in this view.
+	Nodes      map[uint64]*FuncNode // All nodes in this view, indexed by function ID
 }
 
 // ProfileData holds all the parsed views from a single pprof file.
+
 type ProfileData struct {
-	Views    []*ProfileView
-	RawPprof *profile.Profile
+	DurationNanos int64
+	Views         []*ProfileView
+	RawPprof      *profile.Profile
 }
 
 // ParsePprofFile builds a full call graph for each profile type.
-// parser.go
-
 func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 	p, err := profile.Parse(reader)
 	if err != nil {
@@ -65,7 +66,8 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 	}
 
 	profileData := &ProfileData{
-		RawPprof: p,
+		RawPprof:      p,
+		DurationNanos: p.DurationNanos,
 	}
 
 	for i, sampleType := range p.SampleType {
@@ -75,13 +77,16 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 			Nodes: make(map[uint64]*FuncNode),
 		}
 
+		var totalValueForView int64
+
 		// First pass: create all function nodes and calculate flat/cum values.
-		// This ensures all nodes exist before we start creating edges.
 		for _, s := range p.Sample {
 			val := s.Value[i]
 			if val == 0 {
 				continue
 			}
+			totalValueForView += val
+
 			for j, loc := range s.Location {
 				if len(loc.Line) == 0 {
 					continue
@@ -105,27 +110,22 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 			}
 		}
 
+		view.TotalValue = totalValueForView
+
 		// Second pass: establish the edges (caller -> callee relationships)
 		for _, s := range p.Sample {
 			val := s.Value[i]
 			if val == 0 {
 				continue
 			}
-			// The call stack is ordered callee -> caller -> caller's caller ...
-			// So for any j > 0, location[j] is the caller of location[j-1].
 			for j := 1; j < len(s.Location); j++ {
-				// The function that was called (the callee)
 				calleeLoc := s.Location[j-1]
 				calleeFunc := calleeLoc.Line[0].Function
-				calleeNode := view.Nodes[calleeFunc.ID]
-
-				// The function that made the call (the caller)
+				calleeNode, ok1 := view.Nodes[calleeFunc.ID]
 				callerLoc := s.Location[j]
 				callerFunc := callerLoc.Line[0].Function
-				callerNode := view.Nodes[callerFunc.ID]
-
-				// Establish the link if both nodes exist
-				if callerNode != nil && calleeNode != nil {
+				callerNode, ok2 := view.Nodes[callerFunc.ID]
+				if ok1 && ok2 {
 					callerNode.Out[calleeNode] += val
 					calleeNode.In[callerNode] += val
 				}

@@ -1,3 +1,5 @@
+// styles.go
+
 package main
 
 import "github.com/charmbracelet/lipgloss"
@@ -6,7 +8,8 @@ type Styles struct {
 	Base,
 	List,
 	Source,
-	Status lipgloss.Style
+	Status,
+	Header lipgloss.Style
 	DiffPositive,
 	DiffNegative lipgloss.Style
 }
@@ -14,6 +17,14 @@ type Styles struct {
 func defaultStyles() Styles {
 	s := Styles{}
 	s.Base = lipgloss.NewStyle().Padding(0, 1)
+
+	// --- NEW: Define the Header style ---
+	s.Header = lipgloss.NewStyle().
+		Padding(0, 1).
+		MarginBottom(1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")) // A subtle grey
+
 	s.List = lipgloss.NewStyle().Border(lipgloss.RoundedBorder(), true).BorderForeground(lipgloss.Color("63"))
 	s.Source = lipgloss.NewStyle().Border(lipgloss.RoundedBorder(), true).BorderForeground(lipgloss.Color("205"))
 	s.Status = lipgloss.NewStyle().

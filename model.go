@@ -25,7 +25,7 @@ const (
 var layoutRatios = []float64{0.4, 0.6, 0.2} // 40/60, 60/40, 20/80
 
 func (s sortOrder) String() string {
-	return []string{"Flat", "Cum", "Name"}[s]
+	return []string{"Self", "Total", "Name"}[s]
 }
 
 type viewMode int
@@ -46,31 +46,27 @@ type listItem struct {
 }
 
 func (i listItem) Title() string { return i.node.Name }
+
 func (i listItem) Description() string {
-	// Case 1: Caller/Callee list item (has context)
 	if i.contextNode != nil {
 		var edgePercentOfCum float64
-		// Calculate what percentage of the context node's cumulative value this edge represents
 		if i.contextNode.CumValue > 0 {
 			edgePercentOfCum = (float64(i.edgeValue) / float64(i.contextNode.CumValue)) * 100
 		}
 		edgeStr := formatValue(i.edgeValue, i.unit)
 
-		// Also show the node's own flat/cum values for reference
 		flatStr := formatValue(i.node.FlatValue, i.unit)
 		cumStr := formatValue(i.node.CumValue, i.unit)
 
-		return fmt.Sprintf("Edge: %s (%.1f%% of caller's Cum) | Flat: %s | Cum: %s", edgeStr, edgePercentOfCum, flatStr, cumStr)
+		return fmt.Sprintf("Contribution: %s (%.1f%% of selected) | Self: %s | Total: %s", edgeStr, edgePercentOfCum, flatStr, cumStr)
 	}
 
-	// Case 2: Diff mode main list item
 	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
 		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
 		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
-		return fmt.Sprintf("Flat: %s | Cum: %s", flatStr, cumStr)
+		return fmt.Sprintf("Self Δ: %s | Total Δ: %s", flatStr, cumStr)
 	}
 
-	// Case 3: Normal main list item
 	var flatPercent, cumPercent float64
 	if i.TotalValue > 0 {
 		flatPercent = (float64(i.node.FlatValue) / float64(i.TotalValue)) * 100
@@ -83,8 +79,9 @@ func (i listItem) Description() string {
 	valueAndPercentStr := fmt.Sprintf("%s (%.1f%%)", flatStr, flatPercent)
 	cumAndPercentStr := fmt.Sprintf("%s (%.1f%%)", cumStr, cumPercent)
 
-	return fmt.Sprintf("Flat: %s | Cum: %s", valueAndPercentStr, cumAndPercentStr)
+	return fmt.Sprintf("Self: %s | Total: %s", valueAndPercentStr, cumAndPercentStr)
 }
+
 func (i listItem) FilterValue() string { return i.node.Name }
 
 type model struct {

@@ -39,67 +39,105 @@ const (
 type listItem struct {
 	node        *FuncNode
 	unit        string
+	viewName    string
 	styles      *Styles
 	TotalValue  int64
-	edgeValue   int64     // The value of the specific edge (e.g., from caller to selected)
-	contextNode *FuncNode // The node this item is relative to (the selected node in the main list)
+	edgeValue   int64
+	contextNode *FuncNode
+	isCaller    bool
 }
 
 func (i listItem) Title() string { return i.node.Name }
 
 func (i listItem) Description() string {
-	// Case 1: Caller/Callee list item (has context)
-	if i.contextNode != nil {
-		var edgePercentOfCum float64
-		if i.contextNode.CumValue > 0 {
-			edgePercentOfCum = (float64(i.edgeValue) / float64(i.contextNode.CumValue)) * 100
+	formatPercent := func(val int64, total int64) string {
+		if total == 0 {
+			return " (100.0%)"
 		}
-		edgeStr := formatValue(i.edgeValue, i.unit)
-
-		flatStr := formatValue(i.node.FlatValue, i.unit)
-		cumStr := formatValue(i.node.CumValue, i.unit)
-
-		return fmt.Sprintf("Contribution: %s (%.1f%% of selected) | Self: %s | Total: %s", edgeStr, edgePercentOfCum, flatStr, cumStr)
+		if val == 0 {
+			return ""
+		}
+		percent := (float64(val) / float64(total)) * 100
+		if percent < 0.1 {
+			return " (<0.1%)"
+		}
+		return fmt.Sprintf(" (%.1f%%)", percent)
 	}
 
-	// Case 2: Diff mode main list item
+	// Case 1: Caller/Callee context.
+	if i.contextNode != nil {
+		edgeStr := formatValue(i.edgeValue, i.unit)
+		if i.isCaller {
+			percentOfCallersTotal := formatPercent(i.edgeValue, i.node.CumValue)
+			return fmt.Sprintf(
+				"this function called the one you selected, a call responsible for %s (%s of this function's total)",
+				edgeStr, strings.TrimSpace(percentOfCallersTotal),
+			)
+		} else {
+			percentOfSelectedsTotal := formatPercent(i.edgeValue, i.contextNode.CumValue)
+			return fmt.Sprintf(
+				"was called by the selected function, accounting for %s (%s of its total cost)",
+				edgeStr, strings.TrimSpace(percentOfSelectedsTotal),
+			)
+		}
+	}
+
+	// Case 2: Diff mode
 	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
 		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
 		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
-		return fmt.Sprintf("Self Δ: %s | Total Δ: %s", flatStr, cumStr)
+		return fmt.Sprintf("own Δ: %s | total Δ: %s", flatStr, cumStr)
 	}
 
-	// Case 3: Normal main list item
-	var flatPercent, cumPercent float64
-	if i.TotalValue > 0 {
-		flatPercent = (float64(i.node.FlatValue) / float64(i.TotalValue)) * 100
-		cumPercent = (float64(i.node.CumValue) / float64(i.TotalValue)) * 100
+	// Case 3: Main list descriptions - the final, refined version.
+	ownVal := i.node.FlatValue
+	totalVal := i.node.CumValue
+	ownStr := formatValue(ownVal, i.unit)
+	totalStr := formatValue(totalVal, i.unit)
+
+	// Is 98% or more of the cost flat? If so, it's a "worker".
+	isWorker := totalVal == 0 || (float64(ownVal)/float64(totalVal)) >= 0.98
+
+	switch {
+	case strings.Contains(i.viewName, "alloc_space"), strings.Contains(i.viewName, "alloc_objects"):
+		verb := "allocated"
+		noun := "of memory"
+		if strings.Contains(i.viewName, "objects") {
+			verb = "created"
+			noun = "objects"
+		}
+		base := fmt.Sprintf("%s %s %s on its own", verb, ownStr, noun)
+		if isWorker {
+			return base
+		}
+		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
+
+	case strings.Contains(i.viewName, "inuse_space"), strings.Contains(i.viewName, "inuse_objects"):
+		noun := "of memory"
+		if strings.Contains(i.viewName, "objects") {
+			noun = "objects"
+		}
+		base := fmt.Sprintf("accounted for %s %s on its own", ownStr, noun)
+		if isWorker {
+			return base
+		}
+		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
+
+	case strings.Contains(i.viewName, "cpu"), strings.Contains(i.viewName, "samples"):
+		// Special case for clear "manager" functions
+		if totalVal > 0 && (float64(ownVal)/float64(totalVal)) < 0.15 {
+			return fmt.Sprintf("mainly waited for callees (%s), with only %s of its own work", totalStr, ownStr)
+		}
+
+		base := fmt.Sprintf("spent %s doing its own work", ownStr)
+		if isWorker {
+			return base
+		}
+		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
+
+	default: // Generic fallback
+		return fmt.Sprintf("own cost: %s; total with callees: %s", ownStr, totalStr)
 	}
-
-	flatStr := formatValue(i.node.FlatValue, i.unit)
-	cumStr := formatValue(i.node.CumValue, i.unit)
-
-	var valueAndPercentStr, cumAndPercentStr string
-
-	// Self (Flat) value
-	if i.node.FlatValue == 0 {
-		valueAndPercentStr = flatStr // No percentage for zero
-	} else if flatPercent < 0.1 && flatPercent > 0 {
-		valueAndPercentStr = fmt.Sprintf("%s (<0.1%%)", flatStr)
-	} else {
-		valueAndPercentStr = fmt.Sprintf("%s (%.1f%%)", flatStr, flatPercent)
-	}
-
-	// Total (Cum) value
-	if i.node.CumValue == 0 {
-		cumAndPercentStr = cumStr // No percentage for zero
-	} else if cumPercent < 0.1 && cumPercent > 0 {
-		cumAndPercentStr = fmt.Sprintf("%s (<0.1%%)", cumStr)
-	} else {
-		cumAndPercentStr = fmt.Sprintf("%s (%.1f%%)", cumStr, cumPercent)
-	}
-
-	return fmt.Sprintf("Self: %s | Total: %s", valueAndPercentStr, cumAndPercentStr)
 }
 
 func (i listItem) FilterValue() string { return i.node.Name }
@@ -230,6 +268,7 @@ func (m *model) resortAndSetList() {
 		items[i] = listItem{
 			node:       node,
 			unit:       currentView.Unit,
+			viewName:   currentView.Name,
 			styles:     &m.styles,
 			TotalValue: currentView.TotalValue,
 		}
@@ -284,9 +323,10 @@ func (m *model) updateGraphLists(selectedNode *FuncNode) {
 			node:        callerNode,
 			unit:        unit,
 			styles:      &m.styles,
-			TotalValue:  totalValue,   // Pass total value
-			edgeValue:   edgeVal,      // This is the weight of the edge from the caller
-			contextNode: selectedNode, // The node we're viewing callers of
+			TotalValue:  totalValue,
+			edgeValue:   edgeVal,
+			contextNode: selectedNode,
+			isCaller:    true, // This is a caller
 		})
 	}
 	// Sort callers by the edge weight (most impactful callers first)
@@ -303,8 +343,9 @@ func (m *model) updateGraphLists(selectedNode *FuncNode) {
 			unit:        unit,
 			styles:      &m.styles,
 			TotalValue:  totalValue,
-			edgeValue:   edgeVal,      // This is the weight of the edge to the callee
-			contextNode: selectedNode, // The node we're viewing callees of
+			edgeValue:   edgeVal,
+			contextNode: selectedNode,
+			isCaller:    false, // This is a callee
 		})
 	}
 	// Sort callees by the edge weight (most expensive calls first)

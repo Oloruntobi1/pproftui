@@ -21,6 +21,9 @@ const (
 	byName
 )
 
+// Predefined layouts the user can cycle through.
+var layoutRatios = []float64{0.4, 0.6, 0.2} // 40/60, 60/40, 20/80
+
 func (s sortOrder) String() string {
 	return []string{"Flat", "Cum", "Name"}[s]
 }
@@ -101,6 +104,10 @@ type model struct {
 	// Flamegraph zoom
 	zoomedFlameRoot *FlameNode // Current zoom root (nil = full view)
 
+	width       int
+	height      int
+	layoutIndex int
+
 	styles   Styles
 	ready    bool
 	showHelp bool
@@ -117,6 +124,7 @@ func newModel(data *ProfileData, sourceInfo string) model {
 		isDiffMode:       isDiff,
 		mode:             sourceView,
 		sort:             byFlat,
+		layoutIndex:      0,
 		helpView:         viewport.New(0, 0),
 		showHelp:         false,
 		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
@@ -130,6 +138,33 @@ func newModel(data *ProfileData, sourceInfo string) model {
 	m.calleesList.Title = "Callees"
 	m.setActiveView()
 	return m
+}
+
+func (m *model) applyPaneSizes() {
+	h, v := m.styles.Base.GetFrameSize()
+
+	header := m.renderDiagnosticHeader()
+	headerHeight := lipgloss.Height(header)
+
+	statusHeight := 1
+
+	paneHeight := m.height - v - headerHeight - statusHeight
+
+	splitRatio := layoutRatios[m.layoutIndex]
+	availableWidth := m.width - h
+	listWidth := int(float64(availableWidth) * splitRatio)
+	rightPaneWidth := availableWidth - listWidth
+
+	m.mainList.SetSize(listWidth, paneHeight)
+	m.styles.List = m.styles.List.Width(listWidth).Height(paneHeight)
+	m.source.Width = rightPaneWidth
+	m.source.Height = paneHeight
+	m.styles.Source = m.styles.Source.Width(rightPaneWidth).Height(paneHeight)
+	graphListHeight := paneHeight / 2
+	m.callersList.SetSize(rightPaneWidth, graphListHeight)
+	m.calleesList.SetSize(rightPaneWidth, paneHeight-graphListHeight)
+	m.helpView.Width = m.width - h
+	m.helpView.Height = paneHeight
 }
 
 // setActiveView now just sets the title and calls our new sorting/updating function.
@@ -285,29 +320,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		h, v := m.styles.Base.GetFrameSize()
+		m.width = msg.Width
+		m.height = msg.Height
 
-		header := m.renderDiagnosticHeader()
-		headerHeight := lipgloss.Height(header)
-
-		statusHeight := 1
-
-		paneHeight := msg.Height - v - headerHeight - statusHeight
-
-		listWidth := int(float64(msg.Width-h) * 0.4)
-		rightPaneWidth := msg.Width - h - listWidth
-
-		m.mainList.SetSize(listWidth, paneHeight)
-		m.styles.List = m.styles.List.Width(listWidth).Height(paneHeight)
-		m.source.Width = rightPaneWidth
-		m.source.Height = paneHeight
-		m.styles.Source = m.styles.Source.Width(rightPaneWidth).Height(paneHeight)
-		graphListHeight := paneHeight / 2
-		m.callersList.SetSize(rightPaneWidth, graphListHeight)
-		m.calleesList.SetSize(rightPaneWidth, paneHeight-graphListHeight)
-
-		m.helpView.Width = msg.Width - h
-		m.helpView.Height = paneHeight
+		m.applyPaneSizes()
 
 		if !m.ready {
 			m.ready = true
@@ -379,6 +395,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.zoomedFlameRoot = nil
 					return m, nil
 				}
+			case "r":
+				m.layoutIndex = (m.layoutIndex + 1) % len(layoutRatios)
+				m.applyPaneSizes()
+				return m, nil
 			}
 		}
 	}
@@ -450,7 +470,7 @@ func (m model) View() string {
 	} else {
 		sortStr := m.currentSortString()
 		statusText = m.styles.Status.Render(
-			fmt.Sprintf("F1 help | s sort (%s) | t view | c mode | f flame | q quit", sortStr),
+			fmt.Sprintf("F1 help | s sort (%s) | t view | c mode | f flame | r resize | q quit", sortStr),
 		)
 	}
 

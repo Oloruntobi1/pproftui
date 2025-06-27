@@ -22,7 +22,7 @@ const (
 )
 
 func (s sortOrder) String() string {
-	return []string{"Flat", "Cumulative", "Name"}[s]
+	return []string{"Flat", "Cum", "Name"}[s]
 }
 
 type viewMode int
@@ -33,7 +33,6 @@ const (
 	flameGraphView
 )
 
-// listItem now represents a FuncNode.
 type listItem struct {
 	node       *FuncNode
 	unit       string
@@ -44,7 +43,6 @@ type listItem struct {
 func (i listItem) Title() string { return i.node.Name }
 func (i listItem) Description() string {
 	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
-		// Diff mode - percentages are less meaningful here, so let's keep it clean.
 		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
 		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
 		return fmt.Sprintf("Flat: %s | Cum: %s", flatStr, cumStr)
@@ -72,6 +70,7 @@ type model struct {
 	mode             viewMode
 	sort             sortOrder
 	sourceInfo       string
+	isDiffMode       bool
 
 	// UI components
 	mainList    list.Model
@@ -90,10 +89,12 @@ type model struct {
 
 func newModel(data *ProfileData, sourceInfo string) model {
 	styles := defaultStyles()
+	isDiff := strings.HasPrefix(sourceInfo, "Diff:")
 	m := model{
 		profileData:      data,
 		currentViewIndex: 0,
 		sourceInfo:       sourceInfo,
+		isDiffMode:       isDiff,
 		mode:             sourceView,
 		sort:             byFlat,
 		helpView:         viewport.New(0, 0),
@@ -125,19 +126,25 @@ func (m *model) resortAndSetList() {
 		nodes = append(nodes, node)
 	}
 
-	// Apply the current sort order
 	switch m.sort {
 	case byFlat:
-		sort.Slice(nodes, func(i, j int) bool { return nodes[i].FlatValue > nodes[j].FlatValue })
+		if m.isDiffMode {
+			sort.Slice(nodes, func(i, j int) bool { return abs(nodes[i].FlatDelta) > abs(nodes[j].FlatDelta) })
+		} else {
+			sort.Slice(nodes, func(i, j int) bool { return nodes[i].FlatValue > nodes[j].FlatValue })
+		}
 	case byCum:
-		sort.Slice(nodes, func(i, j int) bool { return nodes[i].CumValue > nodes[j].CumValue })
+		if m.isDiffMode {
+			sort.Slice(nodes, func(i, j int) bool { return abs(nodes[i].CumDelta) > abs(nodes[j].CumDelta) })
+		} else {
+			sort.Slice(nodes, func(i, j int) bool { return nodes[i].CumValue > nodes[j].CumValue })
+		}
 	case byName:
 		sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	}
 
 	items := make([]list.Item, len(nodes))
 	for i, node := range nodes {
-		// Pass the view's TotalValue into each item we create.
 		items[i] = listItem{
 			node:       node,
 			unit:       currentView.Unit,
@@ -148,6 +155,14 @@ func (m *model) resortAndSetList() {
 
 	m.mainList.SetItems(items)
 	m.updateChildPanes()
+}
+
+func (m model) currentSortString() string {
+	baseSort := m.sort.String()
+	if m.isDiffMode && (m.sort == byFlat || m.sort == byCum) {
+		return baseSort + " Δ" // Add delta symbol in diff mode
+	}
+	return baseSort
 }
 
 // updateChildPanes updates the right-hand side based on the current mode and selection.
@@ -201,13 +216,10 @@ func (m *model) updateGraphLists(node *FuncNode) {
 
 func (m model) Init() tea.Cmd { return nil }
 
-// model.go
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
 	if m.showHelp {
-		// If help is showing, all we do is pass messages to its viewport for scrolling,
-		// and check for keys to close it.
 		if msg, ok := msg.(tea.KeyMsg); ok {
 			switch msg.String() {
 			case "f1", "q", "esc":
@@ -268,14 +280,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mainList.FilterState() != list.Filtering {
 			switch msg.String() {
 			case "f1":
-				// 1. Get the specific help for the current view.
 				viewExplanation := getExplanationForView(m.mainList.Title)
 
-				// 2. Get our new general help topics.
 				flatCumExplanation := explainerMap["flat_vs_cum"]
 				flameGraphExplanation := explainerMap["flamegraph"]
 
-				// 3. Build a comprehensive help text.
 				var helpBuilder strings.Builder
 				helpBuilder.WriteString(fmt.Sprintf("# %s\n\n%s\n\n", viewExplanation.Title, viewExplanation.Description))
 				helpBuilder.WriteString("---\n\n")
@@ -306,7 +315,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "f":
 				if m.mode == flameGraphView {
-					m.mode = sourceView // Toggle back to source view
+					m.mode = sourceView     // Toggle back to source view
 					m.zoomedFlameRoot = nil // Reset zoom when exiting flamegraph
 				} else {
 					m.mode = flameGraphView
@@ -377,13 +386,13 @@ func (m model) View() string {
 	} else {
 		currentViewIndex := m.currentViewIndex
 		flameRoot := BuildFlameGraph(m.profileData.RawPprof, currentViewIndex)
-		
+
 		// Use zoomed root if we're zoomed in
 		displayRoot := flameRoot
 		if m.zoomedFlameRoot != nil {
 			displayRoot = m.zoomedFlameRoot
 		}
-		
+
 		rightPaneWidth := m.source.Width
 		rightPane = RenderFlameGraph(displayRoot, rightPaneWidth)
 	}
@@ -401,8 +410,9 @@ func (m model) View() string {
 			)
 		}
 	} else {
+		sortStr := m.currentSortString()
 		statusText = m.styles.Status.Render(
-			"F1 help | s sort | t view | c mode | f flame | q quit",
+			fmt.Sprintf("F1 help | s sort (%s) | t view | c mode | f flame | q quit", sortStr),
 		)
 	}
 
@@ -436,7 +446,6 @@ func (m model) renderDiagnosticHeader() string {
 	currentView := m.profileData.Views[m.currentViewIndex]
 	var diagnosticText string
 
-	// No change to Diff or CPU logic
 	if strings.HasPrefix(currentView.Name, "Diff:") {
 		diagnosticText = "💡 Comparing two profiles. Green (+) means more time/memory was used in the second profile. Red (-) means less."
 	} else if strings.Contains(currentView.Name, "cpu") || strings.Contains(currentView.Name, "samples") {

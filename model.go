@@ -34,20 +34,40 @@ const (
 )
 
 type listItem struct {
-	node       *FuncNode
-	unit       string
-	styles     *Styles
-	TotalValue int64
+	node        *FuncNode
+	unit        string
+	styles      *Styles
+	TotalValue  int64
+	edgeValue   int64     // The value of the specific edge (e.g., from caller to selected)
+	contextNode *FuncNode // The node this item is relative to (the selected node in the main list)
 }
 
 func (i listItem) Title() string { return i.node.Name }
 func (i listItem) Description() string {
+	// Case 1: Caller/Callee list item (has context)
+	if i.contextNode != nil {
+		var edgePercentOfCum float64
+		// Calculate what percentage of the context node's cumulative value this edge represents
+		if i.contextNode.CumValue > 0 {
+			edgePercentOfCum = (float64(i.edgeValue) / float64(i.contextNode.CumValue)) * 100
+		}
+		edgeStr := formatValue(i.edgeValue, i.unit)
+
+		// Also show the node's own flat/cum values for reference
+		flatStr := formatValue(i.node.FlatValue, i.unit)
+		cumStr := formatValue(i.node.CumValue, i.unit)
+
+		return fmt.Sprintf("Edge: %s (%.1f%% of caller's Cum) | Flat: %s | Cum: %s", edgeStr, edgePercentOfCum, flatStr, cumStr)
+	}
+
+	// Case 2: Diff mode main list item
 	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
 		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
 		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
 		return fmt.Sprintf("Flat: %s | Cum: %s", flatStr, cumStr)
 	}
 
+	// Case 3: Normal main list item
 	var flatPercent, cumPercent float64
 	if i.TotalValue > 0 {
 		flatPercent = (float64(i.node.FlatValue) / float64(i.TotalValue)) * 100
@@ -190,26 +210,44 @@ func (m *model) updateChildPanes() {
 }
 
 // updateGraphLists populates the caller and callee lists.
-func (m *model) updateGraphLists(node *FuncNode) {
-	unit := m.profileData.Views[m.currentViewIndex].Unit
+func (m *model) updateGraphLists(selectedNode *FuncNode) {
+	currentView := m.profileData.Views[m.currentViewIndex]
+	unit := currentView.Unit
+	totalValue := currentView.TotalValue // The total for the whole view
 
 	// Populate Callers
-	callerItems := make([]list.Item, 0, len(node.In))
-	for callerNode := range node.In {
-		callerItems = append(callerItems, listItem{node: callerNode, unit: unit})
+	callerItems := make([]list.Item, 0, len(selectedNode.In))
+	for callerNode, edgeVal := range selectedNode.In {
+		callerItems = append(callerItems, listItem{
+			node:        callerNode,
+			unit:        unit,
+			styles:      &m.styles,
+			TotalValue:  totalValue,   // Pass total value
+			edgeValue:   edgeVal,      // This is the weight of the edge from the caller
+			contextNode: selectedNode, // The node we're viewing callers of
+		})
 	}
+	// Sort callers by the edge weight (most impactful callers first)
 	sort.Slice(callerItems, func(i, j int) bool {
-		return callerItems[i].FilterValue() < callerItems[j].FilterValue()
+		return callerItems[i].(listItem).edgeValue > callerItems[j].(listItem).edgeValue
 	})
 	m.callersList.SetItems(callerItems)
 
 	// Populate Callees
-	calleeItems := make([]list.Item, 0, len(node.Out))
-	for calleeNode := range node.Out {
-		calleeItems = append(calleeItems, listItem{node: calleeNode, unit: unit})
+	calleeItems := make([]list.Item, 0, len(selectedNode.Out))
+	for calleeNode, edgeVal := range selectedNode.Out {
+		calleeItems = append(calleeItems, listItem{
+			node:        calleeNode,
+			unit:        unit,
+			styles:      &m.styles,
+			TotalValue:  totalValue,
+			edgeValue:   edgeVal,      // This is the weight of the edge to the callee
+			contextNode: selectedNode, // The node we're viewing callees of
+		})
 	}
+	// Sort callees by the edge weight (most expensive calls first)
 	sort.Slice(calleeItems, func(i, j int) bool {
-		return calleeItems[i].FilterValue() < calleeItems[j].FilterValue()
+		return calleeItems[i].(listItem).edgeValue > calleeItems[j].(listItem).edgeValue
 	})
 	m.calleesList.SetItems(calleeItems)
 }

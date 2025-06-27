@@ -48,6 +48,7 @@ type listItem struct {
 func (i listItem) Title() string { return i.node.Name }
 
 func (i listItem) Description() string {
+	// Case 1: Caller/Callee list item (has context)
 	if i.contextNode != nil {
 		var edgePercentOfCum float64
 		if i.contextNode.CumValue > 0 {
@@ -61,12 +62,14 @@ func (i listItem) Description() string {
 		return fmt.Sprintf("Contribution: %s (%.1f%% of selected) | Self: %s | Total: %s", edgeStr, edgePercentOfCum, flatStr, cumStr)
 	}
 
+	// Case 2: Diff mode main list item
 	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
 		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
 		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
 		return fmt.Sprintf("Self Δ: %s | Total Δ: %s", flatStr, cumStr)
 	}
 
+	// Case 3: Normal main list item
 	var flatPercent, cumPercent float64
 	if i.TotalValue > 0 {
 		flatPercent = (float64(i.node.FlatValue) / float64(i.TotalValue)) * 100
@@ -76,8 +79,25 @@ func (i listItem) Description() string {
 	flatStr := formatValue(i.node.FlatValue, i.unit)
 	cumStr := formatValue(i.node.CumValue, i.unit)
 
-	valueAndPercentStr := fmt.Sprintf("%s (%.1f%%)", flatStr, flatPercent)
-	cumAndPercentStr := fmt.Sprintf("%s (%.1f%%)", cumStr, cumPercent)
+	var valueAndPercentStr, cumAndPercentStr string
+
+	// Self (Flat) value
+	if i.node.FlatValue == 0 {
+		valueAndPercentStr = flatStr // No percentage for zero
+	} else if flatPercent < 0.1 && flatPercent > 0 {
+		valueAndPercentStr = fmt.Sprintf("%s (<0.1%%)", flatStr)
+	} else {
+		valueAndPercentStr = fmt.Sprintf("%s (%.1f%%)", flatStr, flatPercent)
+	}
+
+	// Total (Cum) value
+	if i.node.CumValue == 0 {
+		cumAndPercentStr = cumStr // No percentage for zero
+	} else if cumPercent < 0.1 && cumPercent > 0 {
+		cumAndPercentStr = fmt.Sprintf("%s (<0.1%%)", cumStr)
+	} else {
+		cumAndPercentStr = fmt.Sprintf("%s (%.1f%%)", cumStr, cumPercent)
+	}
 
 	return fmt.Sprintf("Self: %s | Total: %s", valueAndPercentStr, cumAndPercentStr)
 }
@@ -114,6 +134,7 @@ type model struct {
 func newModel(data *ProfileData, sourceInfo string) model {
 	styles := defaultStyles()
 	isDiff := strings.HasPrefix(sourceInfo, "Diff:")
+
 	m := model{
 		profileData:      data,
 		currentViewIndex: 0,
@@ -125,16 +146,23 @@ func newModel(data *ProfileData, sourceInfo string) model {
 		helpView:         viewport.New(0, 0),
 		showHelp:         false,
 		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
-		source:           viewport.New(0, 0),
 		callersList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
 		calleesList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		source:           viewport.New(0, 0),
 		styles:           styles,
 	}
 	m.source.Style = styles.Source
+
+	// Configure Callers list
 	m.callersList.Title = "Callers"
 	m.callersList.SetShowHelp(false)
+	m.callersList.SetShowStatusBar(false)
+
+	// Configure Callees list (FIXED)
 	m.calleesList.Title = "Callees"
 	m.calleesList.SetShowHelp(false)
+	m.calleesList.SetShowStatusBar(false) // Corrected from m.callersList
+
 	m.setActiveView()
 	return m
 }

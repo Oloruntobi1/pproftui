@@ -368,6 +368,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.resortAndSetList()
 				return m, nil
 			case "f":
+				if m.isDiffMode {
+					return m, nil
+				}
 				if m.mode == flameGraphView {
 					m.mode = sourceView     // Toggle back to source view
 					m.zoomedFlameRoot = nil // Reset zoom when exiting flamegraph
@@ -458,6 +461,7 @@ func (m model) View() string {
 
 	var statusText string
 	if m.mode == flameGraphView {
+		// This block is now only reachable in non-diff mode, so it's safe.
 		if m.zoomedFlameRoot != nil {
 			statusText = m.styles.Status.Render(
 				"F1 help | esc zoom out | f exit flame | t view | q quit",
@@ -469,9 +473,17 @@ func (m model) View() string {
 		}
 	} else {
 		sortStr := m.currentSortString()
-		statusText = m.styles.Status.Render(
-			fmt.Sprintf("F1 help | s sort (%s) | t view | c mode | f flame | r resize | q quit", sortStr),
-		)
+		helpItems := []string{
+			"F1 help",
+			fmt.Sprintf("s sort (%s)", sortStr),
+			"t view",
+			"c mode",
+		}
+		if !m.isDiffMode {
+			helpItems = append(helpItems, "f flame")
+		}
+		helpItems = append(helpItems, "r resize", "q quit")
+		statusText = m.styles.Status.Render(strings.Join(helpItems, " | "))
 	}
 
 	// 4. Join them all vertically

@@ -135,7 +135,9 @@ func newModel(data *ProfileData, sourceInfo string) model {
 	}
 	m.source.Style = styles.Source
 	m.callersList.Title = "Callers"
+	m.callersList.SetShowHelp(false)
 	m.calleesList.Title = "Callees"
+	m.calleesList.SetShowHelp(false)
 	m.setActiveView()
 	return m
 }

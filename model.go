@@ -22,7 +22,7 @@ const (
 )
 
 // Predefined layouts the user can cycle through.
-var layoutRatios = []float64{0.4, 0.6, 0.2} // 40/60, 60/40, 20/80
+var layoutRatios = []float64{0.4, 0.6, 0.3} // 40/60, 60/40, 30/70
 
 func (s sortOrder) String() string {
 	return []string{"Self", "Total", "Name"}[s]
@@ -136,7 +136,7 @@ func (i listItem) Description() string {
 		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
 
 	default: // Generic fallback
-		return fmt.Sprintf("own cost: %s; total with callees: %s", ownStr, totalStr)
+		return fmt.Sprintf("Flat: %s; Cum: %s", ownStr, totalStr)
 	}
 }
 
@@ -529,7 +529,6 @@ func (m model) View() string {
 
 	var statusText string
 	if m.mode == flameGraphView {
-		// This block is now only reachable in non-diff mode, so it's safe.
 		if m.zoomedFlameRoot != nil {
 			statusText = m.styles.Status.Render(
 				"F1 help | esc zoom out | f exit flame | t view | q quit",

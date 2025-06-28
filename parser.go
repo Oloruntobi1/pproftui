@@ -42,7 +42,6 @@ type FuncNode struct {
 	Out map[*FuncNode]int64 // Callees: map[callee]edge_weight
 }
 
-// ProfileView now contains a graph of nodes and the total value.
 type ProfileView struct {
 	Name       string
 	Unit       string
@@ -51,7 +50,6 @@ type ProfileView struct {
 }
 
 // ProfileData holds all the parsed views from a single pprof file.
-
 type ProfileData struct {
 	DurationNanos int64
 	Views         []*ProfileView

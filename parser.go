@@ -189,71 +189,126 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 		return nil, fmt.Errorf("could not parse 'after' profile: %w", err)
 	}
 
-	// Step 2: Find the profile types that exist in BOTH files.
-	// We'll use maps for efficient lookup.
 	beforeViewsMap := make(map[string]*ProfileView)
 	for _, v := range beforeData.Views {
-		// Use the base type (e.g., "inuse_space") as the key for matching.
 		baseName := strings.Split(v.Name, " ")[0]
 		beforeViewsMap[baseName] = v
 	}
 
-	diffProfileData := &ProfileData{} // This will hold our final diffed views.
+	diffProfileData := &ProfileData{
+		DurationNanos: afterData.DurationNanos,
+		RawPprof:      afterData.RawPprof,
+	}
 
-	// Step 3: Iterate through the 'after' views and see if there's a match in 'before'.
+	// Step 2: Iterate through 'after' views to find common views to diff.
 	for _, afterView := range afterData.Views {
 		baseName := strings.Split(afterView.Name, " ")[0]
 		beforeView, ok := beforeViewsMap[baseName]
-
 		if !ok {
-			// This profile type doesn't exist in the 'before' file, so we can't diff it.
 			continue
 		}
 
-		// We have a match! Let's create a diff view.
+		// Step 3: Create the diff view and its nodes.
 		diffView := &ProfileView{
-			Name:  fmt.Sprintf("Diff: %s", afterView.Name),
-			Unit:  afterView.Unit,
-			Nodes: make(map[uint64]*FuncNode),
+			Name:       fmt.Sprintf("Diff: %s", strings.TrimPrefix(afterView.Name, "Diff: ")),
+			Unit:       afterView.Unit,
+			Nodes:      make(map[uint64]*FuncNode),
+			TotalValue: afterView.TotalValue - beforeView.TotalValue,
 		}
 
-		// Create a lookup map for the 'before' nodes within this specific view.
-		beforeNodesMap := make(map[string]*FuncNode)
-		for _, node := range beforeView.Nodes {
-			beforeNodesMap[node.Name] = node
+		allNodeIDs := make(map[uint64]struct{})
+		for id := range beforeView.Nodes {
+			allNodeIDs[id] = struct{}{}
+		}
+		for id := range afterView.Nodes {
+			allNodeIDs[id] = struct{}{}
 		}
 
-		// Calculate the diff for each function in the 'after' view.
-		for _, afterNode := range afterView.Nodes {
-			diffNode := &FuncNode{
-				ID: afterNode.ID, Name: afterNode.Name, FileName: afterNode.FileName,
-				StartLine: afterNode.StartLine, FlatValue: afterNode.FlatValue, CumValue: afterNode.CumValue,
-			}
+		for id := range allNodeIDs {
+			beforeNode, hasBefore := beforeView.Nodes[id]
+			afterNode, hasAfter := afterView.Nodes[id]
 
-			if beforeNode, ok := beforeNodesMap[afterNode.Name]; ok {
-				// Function exists in both, calculate delta.
-				diffNode.FlatDelta = afterNode.FlatValue - beforeNode.FlatValue
-				diffNode.CumDelta = afterNode.CumValue - beforeNode.CumValue
-				delete(beforeNodesMap, afterNode.Name) // Mark as processed
+			var baseNode *FuncNode
+			if hasAfter {
+				baseNode = afterNode
 			} else {
-				// Function is new in 'after' profile.
-				diffNode.FlatDelta = afterNode.FlatValue
-				diffNode.CumDelta = afterNode.CumValue
+				baseNode = beforeNode
 			}
-			diffView.Nodes[diffNode.ID] = diffNode
+
+			diffNode := &FuncNode{
+				ID:        baseNode.ID,
+				Name:      baseNode.Name,
+				FileName:  baseNode.FileName,
+				StartLine: baseNode.StartLine,
+				In:        make(map[*FuncNode]int64),
+				Out:       make(map[*FuncNode]int64),
+			}
+
+			if hasBefore {
+				diffNode.FlatDelta -= beforeNode.FlatValue
+				diffNode.CumDelta -= beforeNode.CumValue
+			}
+			if hasAfter {
+				diffNode.FlatDelta += afterNode.FlatValue
+				diffNode.CumDelta += afterNode.CumValue
+			}
+			diffView.Nodes[id] = diffNode
 		}
 
-		// Add any functions that disappeared from the 'before' profile.
-		for _, beforeNode := range beforeNodesMap {
-			diffNode := &FuncNode{
-				ID: beforeNode.ID, Name: beforeNode.Name, FileName: beforeNode.FileName,
-				StartLine: beforeNode.StartLine,
-				FlatDelta: -beforeNode.FlatValue, // Negative delta
-				CumDelta:  -beforeNode.CumValue,
+		// Step 4: Build the delta graph edges.
+		type edgeKey struct{ caller, callee uint64 }
+		allEdges := make(map[edgeKey]struct{})
+
+		// Collect all edges from 'before' view
+		for _, callerNode := range beforeView.Nodes {
+			for calleeNode := range callerNode.Out {
+				allEdges[edgeKey{caller: callerNode.ID, callee: calleeNode.ID}] = struct{}{}
 			}
-			diffView.Nodes[diffNode.ID] = diffNode
 		}
-		// Add the completed diff view to our results.
+		// Collect all edges from 'after' view
+		for _, callerNode := range afterView.Nodes {
+			for calleeNode := range callerNode.Out {
+				allEdges[edgeKey{caller: callerNode.ID, callee: calleeNode.ID}] = struct{}{}
+			}
+		}
+
+		// For each unique edge, calculate the delta.
+		for edge := range allEdges {
+			var beforeVal, afterVal int64
+			if beforeCaller, ok := beforeView.Nodes[edge.caller]; ok {
+				if beforeCallee, ok := beforeView.Nodes[edge.callee]; ok {
+					// Need to find the specific callee node in the 'Out' map
+					for node, val := range beforeCaller.Out {
+						if node.ID == beforeCallee.ID {
+							beforeVal = val
+							break
+						}
+					}
+				}
+			}
+			if afterCaller, ok := afterView.Nodes[edge.caller]; ok {
+				if afterCallee, ok := afterView.Nodes[edge.callee]; ok {
+					// Need to find the specific callee node in the 'Out' map
+					for node, val := range afterCaller.Out {
+						if node.ID == afterCallee.ID {
+							afterVal = val
+							break
+						}
+					}
+				}
+			}
+
+			edgeDelta := afterVal - beforeVal
+			if edgeDelta == 0 {
+				continue
+			}
+
+			diffCaller := diffView.Nodes[edge.caller]
+			diffCallee := diffView.Nodes[edge.callee]
+			diffCaller.Out[diffCallee] = edgeDelta
+			diffCallee.In[diffCaller] = edgeDelta
+		}
+
 		diffProfileData.Views = append(diffProfileData.Views, diffView)
 	}
 

@@ -133,9 +133,23 @@ func (i listItem) Description() string {
 		}
 		return fmt.Sprintf(" (%.1f%%)", percent)
 	}
+	isDiff := strings.HasPrefix(i.viewName, "Diff:")
 
 	// Case 1: Caller/Callee context.
 	if i.contextNode != nil {
+		// Sub-case 1A: We are in a diff view. The edge value is a DELTA.
+		if isDiff {
+			edgeStr := formatDelta(i.edgeValue, i.unit, i.styles)
+			if i.isCaller {
+				// Example: "This function's call *to* the selection changed by +50ms"
+				return fmt.Sprintf("This function's call to the selection changed by %s", edgeStr)
+			} else {
+				// Example: "This call *from* the selection changed by -1.2MiB"
+				return fmt.Sprintf("This call from the selection changed by %s", edgeStr)
+			}
+		}
+
+		// Sub-case 1B: Normal (non-diff) caller/callee view.
 		edgeStr := formatValue(i.edgeValue, i.unit)
 		if i.isCaller {
 			percentOfCallersTotal := formatPercent(i.edgeValue, i.node.CumValue)
@@ -153,7 +167,7 @@ func (i listItem) Description() string {
 	}
 
 	// Case 2: Diff mode
-	if i.node.FlatDelta != 0 || i.node.CumDelta != 0 {
+	if isDiff {
 		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
 		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
 		return fmt.Sprintf("own Δ: %s | total Δ: %s", flatStr, cumStr)
@@ -328,6 +342,7 @@ func (m *model) updateGraphLists(selectedNode *FuncNode) {
 	currentView := m.profileData.Views[m.currentViewIndex]
 	unit := currentView.Unit
 	totalValue := currentView.TotalValue // The total for the whole view
+	viewName := currentView.Name
 
 	// Populate Callers
 	callerItems := make([]list.Item, 0, len(selectedNode.In))
@@ -335,6 +350,7 @@ func (m *model) updateGraphLists(selectedNode *FuncNode) {
 		callerItems = append(callerItems, listItem{
 			node:        callerNode,
 			unit:        unit,
+			viewName:    viewName,
 			styles:      &m.styles,
 			TotalValue:  totalValue,
 			edgeValue:   edgeVal,
@@ -354,6 +370,7 @@ func (m *model) updateGraphLists(selectedNode *FuncNode) {
 		calleeItems = append(calleeItems, listItem{
 			node:        calleeNode,
 			unit:        unit,
+			viewName:    viewName,
 			styles:      &m.styles,
 			TotalValue:  totalValue,
 			edgeValue:   edgeVal,

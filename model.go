@@ -155,7 +155,6 @@ func (i listItem) Description() string {
 		}
 		percent := formatPercent(i.edgeValue, i.contextNode.CumValue)
 		return fmt.Sprintf("was called by the selected function, which triggered %s (%s of its total)", edgeStr, percent)
-
 	}
 
 	// Case 2: Diff mode
@@ -199,6 +198,15 @@ func (i listItem) Description() string {
 		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
 
 	case strings.Contains(i.viewName, "cpu"), strings.Contains(i.viewName, "samples"):
+		// Check for recursion. A function is recursive if it's in its own 'Out' map.
+		_, isRecursive := i.node.Out[i.node]
+
+		if isRecursive && !isWorker {
+			// Use special phrasing for recursive functions.
+			return fmt.Sprintf("is recursive, taking %s total; the top-level call took %s", totalStr, ownStr)
+		}
+
+		// Original logic for non-recursive functions.
 		if totalVal > 0 && (float64(ownVal)/float64(totalVal)) < 0.15 {
 			return fmt.Sprintf("mostly delegated work (%s total); did %s itself", totalStr, ownStr)
 		}

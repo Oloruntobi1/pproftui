@@ -2,6 +2,7 @@
 package main
 
 import (
+	"flag" // NEW
 	"fmt"
 	"io"
 	"log"
@@ -13,49 +14,52 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage:")
-		fmt.Println("  tui-profiler <profile_file_or_url>")
-		fmt.Println("  tui-profiler <before_profile> <after_profile>")
+	modulePath := flag.String("module-path", "", "Root module path of your project (e.g., github.com/user/repo) to highlight relevant code.")
+	flag.Parse()
+
+	args := flag.Args()
+
+	if len(args) < 1 {
+		fmt.Println("Usage: pproftui [--module-path <your_module>] <profile_file_or_url>")
+		fmt.Println("       pproftui [--module-path <your_module>] <before_profile> <after_profile>")
+		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
 	var sourceInfo string
+	var profileData *ProfileData
+	var err error
 
-	if len(os.Args) == 2 {
+	if len(args) == 1 {
 		// Single profile mode
-		sourceInfo = fmt.Sprintf("Source: %s", os.Args[1])
-		reader, closer := getReaderForArg(os.Args[1])
+		sourceInfo = fmt.Sprintf("Source: %s", args[0])
+		reader, closer := getReaderForArg(args[0])
 		defer closer.Close()
-		profileData, err := ParsePprofFile(reader)
-		if err != nil {
-			log.Fatal(err)
-		}
-		m := newModel(profileData, sourceInfo)
-		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-		if _, err := p.Run(); err != nil {
-			log.Fatal("Error running program:", err)
-		}
-	} else if len(os.Args) == 3 {
+		profileData, err = ParsePprofFile(reader)
+	} else if len(args) == 2 {
 		// Diff mode
-		fmt.Println("Starting in diff mode...")
-		sourceInfo = fmt.Sprintf("Diff: %s vs %s", os.Args[1], os.Args[2])
-		readerBefore, closerBefore := getReaderForArg(os.Args[1])
+		sourceInfo = fmt.Sprintf("Diff: %s vs %s", args[0], args[1])
+		readerBefore, closerBefore := getReaderForArg(args[0])
 		defer closerBefore.Close()
-		readerAfter, closerAfter := getReaderForArg(os.Args[2])
+		readerAfter, closerAfter := getReaderForArg(args[1])
 		defer closerAfter.Close()
-
-		diffData, err := DiffPprofFiles(readerBefore, readerAfter)
-		if err != nil {
-			log.Fatal(err)
-		}
-		m := newModel(diffData, sourceInfo)
-		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-		if _, err := p.Run(); err != nil {
-			log.Fatal("Error running program:", err)
-		}
+		profileData, err = DiffPprofFiles(readerBefore, readerAfter)
 	} else {
 		log.Fatal("Invalid number of arguments.")
+	}
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if *modulePath != "" {
+		annotateProjectCode(profileData, *modulePath)
+	}
+
+	m := newModel(profileData, sourceInfo)
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	if _, err := p.Run(); err != nil {
+		log.Fatal("Error running program:", err)
 	}
 }
 

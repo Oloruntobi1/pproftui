@@ -37,6 +37,8 @@ type FuncNode struct {
 	FlatDelta int64
 	CumDelta  int64
 
+	IsProjectCode bool
+
 	// Graph structure
 	In  map[*FuncNode]int64 // Callers: map[caller]edge_weight
 	Out map[*FuncNode]int64 // Callees: map[callee]edge_weight
@@ -303,4 +305,30 @@ func BuildFlameGraph(p *profile.Profile, sampleIndex int) *FlameNode {
 		}
 	}
 	return root
+}
+
+// AnnotateProjectCode marks nodes that belong to the user's project module.
+// The pprof file format often includes the full module path in the function's file name.
+// For example: "github.com/your/project/package/file.go".
+func annotateProjectCode(data *ProfileData, modulePath string) {
+	if data == nil || modulePath == "" {
+		return
+	}
+
+	// Make sure the path has a trailing slash for more accurate matching
+	// to avoid matching "github.com/user/project-extra" if module is "github.com/user/project"
+	normalizedPath := modulePath
+	if !strings.HasSuffix(normalizedPath, "/") {
+		normalizedPath += "/"
+	}
+
+	for _, view := range data.Views {
+		for _, node := range view.Nodes {
+			// We use strings.Contains because filenames can be absolute paths.
+			// e.g., /Users/me/go/src/github.com/my/project/main.go
+			if strings.Contains(node.FileName, normalizedPath) {
+				node.IsProjectCode = true
+			}
+		}
+	}
 }

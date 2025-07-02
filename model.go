@@ -47,7 +47,12 @@ type listItem struct {
 	isCaller    bool
 }
 
-func (i listItem) Title() string { return i.node.Name }
+func (i listItem) Title() string {
+	if i.node.IsProjectCode {
+		return i.styles.ProjectCode.Render("★ " + i.node.Name)
+	}
+	return i.node.Name
+}
 
 func (i listItem) Description() string {
 	formatPercent := func(val int64, total int64) string {

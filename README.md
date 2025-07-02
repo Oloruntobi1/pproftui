@@ -11,7 +11,13 @@ Oh and the context switch between the web and back to your code!
 
 Well, it's now in your terminal, with a very useful help button when you hit F1.
 
-This is the most important feature for me. The rest you will discover.
+## ✨ Core Features
+
+*   **Integrated Source View:** See the exact line of code for any function without leaving the profiler.
+*   **Focus On Your Code:** Use the `--module-path` flag to highlight your project's code, and press `p` to filter out all the noise.
+*   **Powerful Diffing:** Don't just see *what* changed between two profiles. The delta graph view lets you navigate the call stack to see exactly *why* it changed.
+*   **Live Profiling:** Point it at a running Go application's `/debug/pprof` endpoint.
+*   **Interactive Flame Graphs:** Toggle to a flame graph view to get a bird's-eye view of your application's hot spots.
 
 ---
 
@@ -24,43 +30,45 @@ MIT LICENSED.
 ## ⚡ Quick Usage
 
 ```sh
-git https://clone github.com/Oloruntobi1/pproftui.git
-
+git clone https://github.com/Oloruntobi1/pproftui.git
 cd pproftui
-
 go build -o pproftui
 
+# Profile a local file
 ./pproftui cpu.prof
+
+# Focus on your project's code
+./pproftui --module-path "github.com/your/project" cpu.prof
 ```
 
-or
+### Comparing Profiles (Diffing)
 
-```sh
-./pproftui mem.prof
-```
-
-To compare/diff two different profiles:
+To find a performance regression, diff two profiles:
 
 ```sh
 ./pproftui before_cpu.prof after_cpu.prof
 ```
 
-For **live profiling**:
+### Live Profiling
 
+Profile a running application for 10 seconds:
 ```sh
 ./pproftui http://localhost:6060/debug/pprof/profile?seconds=10
 ```
-
-> (If your app is idle, simulate some work while this is running)
+> (If your app is idle, simulate some work while this is running to get a useful profile.)
 
 ---
 
 ## 🧭 Hotkeys
 
-* `t` — toggle view (e.g. between all heap stuff)
-* `f` — flame graph (press `Enter` to drill down)
-* `c` — see callers and callees
-* `s` — sort
+*   `t` — Toggle between different profile types (e.g., `inuse_space`, `alloc_objects`).
+*   `c` — Toggle between source code view and the **callers/callees** graph view.
+*   `p` — Toggle the **"Project Only"** filter to hide runtime/vendor code.
+*   `s` — Cycle through sort orders (`Self`, `Total`, `Name`).
+*   `f` — Toggle the **flame graph** view.
+    *   `Enter` / `Backspace` — Zoom in/out on the flame graph.
+*   `q` — Quit.
+*   **F1** — Show detailed help and explanations.
 
 ---
 

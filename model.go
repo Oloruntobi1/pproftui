@@ -36,6 +36,34 @@ const (
 	flameGraphView
 )
 
+type model struct {
+	profileData      *ProfileData
+	currentViewIndex int
+	mode             viewMode
+	sort             sortOrder
+	sourceInfo       string
+	isDiffMode       bool
+	showProjectOnly  bool
+
+	// UI components
+	mainList    list.Model
+	source      viewport.Model
+	callersList list.Model
+	calleesList list.Model
+
+	// Flamegraph zoom
+	zoomedFlameRoot *FlameNode // Current zoom root (nil = full view)
+
+	width       int
+	height      int
+	layoutIndex int
+
+	styles   Styles
+	ready    bool
+	showHelp bool
+	helpView viewport.Model
+}
+
 type listItem struct {
 	node        *FuncNode
 	unit        string
@@ -45,6 +73,43 @@ type listItem struct {
 	edgeValue   int64
 	contextNode *FuncNode
 	isCaller    bool
+}
+
+func newModel(data *ProfileData, sourceInfo string) model {
+	styles := defaultStyles()
+	isDiff := strings.HasPrefix(sourceInfo, "Diff:")
+
+	m := model{
+		profileData:      data,
+		currentViewIndex: 0,
+		sourceInfo:       sourceInfo,
+		isDiffMode:       isDiff,
+		showProjectOnly:  false,
+		mode:             sourceView,
+		sort:             byFlat,
+		layoutIndex:      0,
+		helpView:         viewport.New(0, 0),
+		showHelp:         false,
+		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		callersList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		calleesList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		source:           viewport.New(0, 0),
+		styles:           styles,
+	}
+	m.source.Style = styles.Source
+
+	// Configure Callers list
+	m.callersList.Title = "Callers"
+	m.callersList.SetShowHelp(false)
+	m.callersList.SetShowStatusBar(false)
+
+	// Configure Callees list (FIXED)
+	m.calleesList.Title = "Callees"
+	m.calleesList.SetShowHelp(false)
+	m.calleesList.SetShowStatusBar(false) // Corrected from m.callersList
+
+	m.setActiveView()
+	return m
 }
 
 func (i listItem) Title() string {
@@ -147,69 +212,6 @@ func (i listItem) Description() string {
 
 func (i listItem) FilterValue() string { return i.node.Name }
 
-type model struct {
-	profileData      *ProfileData
-	currentViewIndex int
-	mode             viewMode
-	sort             sortOrder
-	sourceInfo       string
-	isDiffMode       bool
-
-	// UI components
-	mainList    list.Model
-	source      viewport.Model
-	callersList list.Model
-	calleesList list.Model
-
-	// Flamegraph zoom
-	zoomedFlameRoot *FlameNode // Current zoom root (nil = full view)
-
-	width       int
-	height      int
-	layoutIndex int
-
-	styles   Styles
-	ready    bool
-	showHelp bool
-	helpView viewport.Model
-}
-
-func newModel(data *ProfileData, sourceInfo string) model {
-	styles := defaultStyles()
-	isDiff := strings.HasPrefix(sourceInfo, "Diff:")
-
-	m := model{
-		profileData:      data,
-		currentViewIndex: 0,
-		sourceInfo:       sourceInfo,
-		isDiffMode:       isDiff,
-		mode:             sourceView,
-		sort:             byFlat,
-		layoutIndex:      0,
-		helpView:         viewport.New(0, 0),
-		showHelp:         false,
-		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
-		callersList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
-		calleesList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
-		source:           viewport.New(0, 0),
-		styles:           styles,
-	}
-	m.source.Style = styles.Source
-
-	// Configure Callers list
-	m.callersList.Title = "Callers"
-	m.callersList.SetShowHelp(false)
-	m.callersList.SetShowStatusBar(false)
-
-	// Configure Callees list (FIXED)
-	m.calleesList.Title = "Callees"
-	m.calleesList.SetShowHelp(false)
-	m.calleesList.SetShowStatusBar(false) // Corrected from m.callersList
-
-	m.setActiveView()
-	return m
-}
-
 func (m *model) applyPaneSizes() {
 	h, v := m.styles.Base.GetFrameSize()
 
@@ -237,10 +239,13 @@ func (m *model) applyPaneSizes() {
 	m.helpView.Height = paneHeight
 }
 
-// setActiveView now just sets the title and calls our new sorting/updating function.
 func (m *model) setActiveView() {
 	currentView := m.profileData.Views[m.currentViewIndex]
-	m.mainList.Title = fmt.Sprintf("View: %s", currentView.Name)
+	title := fmt.Sprintf("View: %s", currentView.Name)
+	if m.showProjectOnly {
+		title += " (Project Only)"
+	}
+	m.mainList.Title = title
 	m.resortAndSetList()
 }
 
@@ -268,15 +273,18 @@ func (m *model) resortAndSetList() {
 		sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	}
 
-	items := make([]list.Item, len(nodes))
-	for i, node := range nodes {
-		items[i] = listItem{
+	items := make([]list.Item, 0, len(nodes))
+	for _, node := range nodes {
+		if m.showProjectOnly && !node.IsProjectCode {
+			continue // Skip if we're in project-only mode and this node isn't project code.
+		}
+		items = append(items, listItem{
 			node:       node,
 			unit:       currentView.Unit,
 			viewName:   currentView.Name,
 			styles:     &m.styles,
 			TotalValue: currentView.TotalValue,
-		}
+		})
 	}
 
 	m.mainList.SetItems(items)
@@ -475,6 +483,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.layoutIndex = (m.layoutIndex + 1) % len(layoutRatios)
 				m.applyPaneSizes()
 				return m, nil
+			case "p":
+				m.showProjectOnly = !m.showProjectOnly
+				m.setActiveView() // Re-render the view with the new filter state
+				return m, nil
 			}
 		}
 	}
@@ -550,6 +562,7 @@ func (m model) View() string {
 			fmt.Sprintf("s sort (%s)", sortStr),
 			"t view",
 			"c mode",
+			"p project",
 		}
 		if !m.isDiffMode {
 			helpItems = append(helpItems, "f flame")

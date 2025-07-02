@@ -59,7 +59,6 @@ type ProfileData struct {
 	RawPprof      *profile.Profile
 }
 
-// ParsePprofFile builds a full call graph for each profile type.
 func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 	p, err := profile.Parse(reader)
 	if err != nil {
@@ -80,7 +79,8 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 
 		var totalValueForView int64
 
-		// First pass: create all function nodes and calculate flat/cum values.
+		// First pass: create all function nodes and calculate cumulative values.
+		// This part must also handle inlining correctly.
 		for _, s := range p.Sample {
 			val := s.Value[i]
 			if val == 0 {
@@ -89,8 +89,6 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 			totalValueForView += val
 
 			for j, loc := range s.Location {
-				// To calculate cumulative value correctly, we must consider all
-				// functions in the inlined chain.
 				for _, line := range loc.Line {
 					fun := line.Function
 					if _, ok := view.Nodes[fun.ID]; !ok {
@@ -98,7 +96,7 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 							ID:        fun.ID,
 							Name:      fun.Name,
 							FileName:  fun.Filename,
-							StartLine: int(line.Line), // Use the line number from the Line object
+							StartLine: int(line.Line),
 							In:        make(map[*FuncNode]int64),
 							Out:       make(map[*FuncNode]int64),
 						}
@@ -106,7 +104,6 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 					node := view.Nodes[fun.ID]
 					node.CumValue += val
 				}
-				// Flat value still only applies to the top of the stack (leaf-most function)
 				if j == 0 && len(loc.Line) > 0 {
 					fun := loc.Line[0].Function
 					if node, ok := view.Nodes[fun.ID]; ok {
@@ -119,29 +116,34 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 		view.TotalValue = totalValueForView
 
 		// Second pass: establish the edges (caller -> callee relationships)
-		// This part becomes more complex with inlining.
+		// This must correctly handle both regular calls and inlined calls.
 		for _, s := range p.Sample {
 			val := s.Value[i]
 			if val == 0 {
 				continue
 			}
-			for j := 1; j < len(s.Location); j++ {
-				// The callee is the leaf of the previous location's inlined chain.
-				calleeLoc := s.Location[j-1]
-				// The caller is the leaf of this location's inlined chain.
-				callerLoc := s.Location[j]
 
-				if len(calleeLoc.Line) > 0 && len(callerLoc.Line) > 0 {
-					calleeFunc := calleeLoc.Line[0].Function
-					callerFunc := callerLoc.Line[0].Function
-
-					calleeNode, ok1 := view.Nodes[calleeFunc.ID]
-					callerNode, ok2 := view.Nodes[callerFunc.ID]
-					if ok1 && ok2 {
-						callerNode.Out[calleeNode] += val
-						calleeNode.In[callerNode] += val
+			// Unroll the entire stack for this sample into a single, flat list of functions.
+			var callchain []*FuncNode
+			for j := len(s.Location) - 1; j >= 0; j-- { // From caller to callee
+				loc := s.Location[j]
+				// Unroll inlined functions within the location. Proto spec says last line is the caller.
+				for k := len(loc.Line) - 1; k >= 0; k-- {
+					line := loc.Line[k]
+					if node, ok := view.Nodes[line.Function.ID]; ok {
+						callchain = append(callchain, node)
 					}
 				}
+			}
+
+			// Now, create edges between adjacent functions in the fully unrolled chain.
+			for j := 0; j < len(callchain)-1; j++ {
+				callerNode := callchain[j]
+				calleeNode := callchain[j+1]
+
+				// Add the value to the edge weight. Use a map to avoid double counting edges.
+				callerNode.Out[calleeNode] += val
+				calleeNode.In[callerNode] += val
 			}
 		}
 		profileData.Views = append(profileData.Views, view)
@@ -192,7 +194,6 @@ func formatNanos(n int64) string {
 }
 
 func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
-	// ... (This function remains the same, no changes needed)
 	beforeData, err := ParsePprofFile(beforeReader)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse 'before' profile: %w", err)

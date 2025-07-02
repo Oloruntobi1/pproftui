@@ -120,50 +120,42 @@ func (i listItem) Title() string {
 }
 
 func (i listItem) Description() string {
-	formatPercent := func(val int64, total int64) string {
+	formatPercent := func(val, total int64) string {
 		if total == 0 {
-			return " (100.0%)"
+			return "100.0%"
 		}
 		if val == 0 {
 			return ""
 		}
 		percent := (float64(val) / float64(total)) * 100
 		if percent < 0.1 {
-			return " (<0.1%)"
+			return "<0.1%"
 		}
-		return fmt.Sprintf(" (%.1f%%)", percent)
+		return fmt.Sprintf("%.1f%%", percent)
 	}
+
 	isDiff := strings.HasPrefix(i.viewName, "Diff:")
 
 	// Case 1: Caller/Callee context.
 	if i.contextNode != nil {
-		// Sub-case 1A: We are in a diff view. The edge value is a DELTA.
+		// Sub-case 1A: Diff view
 		if isDiff {
 			edgeStr := formatDelta(i.edgeValue, i.unit, i.styles)
 			if i.isCaller {
-				// Example: "This function's call *to* the selection changed by +50ms"
-				return fmt.Sprintf("This function's call to the selection changed by %s", edgeStr)
-			} else {
-				// Example: "This call *from* the selection changed by -1.2MiB"
-				return fmt.Sprintf("This call from the selection changed by %s", edgeStr)
+				return fmt.Sprintf("this function’s call to the selected one changed by %s", edgeStr)
 			}
+			return fmt.Sprintf("was called by the selected function, and that call changed by %s", edgeStr)
 		}
 
-		// Sub-case 1B: Normal (non-diff) caller/callee view.
+		// Sub-case 1B: Normal caller/callee view
 		edgeStr := formatValue(i.edgeValue, i.unit)
 		if i.isCaller {
-			percentOfCallersTotal := formatPercent(i.edgeValue, i.node.CumValue)
-			return fmt.Sprintf(
-				"this function called the one you selected, a call responsible for %s (%s of this function's total)",
-				edgeStr, strings.TrimSpace(percentOfCallersTotal),
-			)
-		} else {
-			percentOfSelectedsTotal := formatPercent(i.edgeValue, i.contextNode.CumValue)
-			return fmt.Sprintf(
-				"was called by the selected function, accounting for %s (%s of its total cost)",
-				edgeStr, strings.TrimSpace(percentOfSelectedsTotal),
-			)
+			percent := formatPercent(i.edgeValue, i.node.CumValue)
+			return fmt.Sprintf("called the selected function; this call accounts for %s (%s of this function’s total)", edgeStr, percent)
 		}
+		percent := formatPercent(i.edgeValue, i.contextNode.CumValue)
+		return fmt.Sprintf("was called by the selected function, which triggered %s (%s of its total)", edgeStr, percent)
+
 	}
 
 	// Case 2: Diff mode
@@ -173,13 +165,12 @@ func (i listItem) Description() string {
 		return fmt.Sprintf("own Δ: %s | total Δ: %s", flatStr, cumStr)
 	}
 
-	// Case 3: Main list descriptions - the final, refined version.
+	// Case 3: Main list descriptions
 	ownVal := i.node.FlatValue
 	totalVal := i.node.CumValue
 	ownStr := formatValue(ownVal, i.unit)
 	totalStr := formatValue(totalVal, i.unit)
 
-	// Is 98% or more of the cost flat? If so, it's a "worker".
 	isWorker := totalVal == 0 || (float64(ownVal)/float64(totalVal)) >= 0.98
 
 	switch {
@@ -201,26 +192,28 @@ func (i listItem) Description() string {
 		if strings.Contains(i.viewName, "objects") {
 			noun = "objects"
 		}
-		base := fmt.Sprintf("accounted for %s %s on its own", ownStr, noun)
+		base := fmt.Sprintf("held %s %s on its own", ownStr, noun)
 		if isWorker {
 			return base
 		}
 		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
 
 	case strings.Contains(i.viewName, "cpu"), strings.Contains(i.viewName, "samples"):
-		// Special case for clear "manager" functions
 		if totalVal > 0 && (float64(ownVal)/float64(totalVal)) < 0.15 {
-			return fmt.Sprintf("mainly waited for callees (%s), with only %s of its own work", totalStr, ownStr)
+			return fmt.Sprintf("mostly delegated work (%s total); did %s itself", totalStr, ownStr)
 		}
-
 		base := fmt.Sprintf("spent %s doing its own work", ownStr)
 		if isWorker {
 			return base
 		}
 		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
 
-	default: // Generic fallback
-		return fmt.Sprintf("Flat: %s; Cum: %s", ownStr, totalStr)
+	default: // fallback
+		base := fmt.Sprintf("used %s on its own", ownStr)
+		if isWorker {
+			return base
+		}
+		return fmt.Sprintf("%s; %s total including callees", base, totalStr)
 	}
 }
 

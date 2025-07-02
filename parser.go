@@ -1,9 +1,9 @@
-// parser.go
 package main
 
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +15,7 @@ type FlameNode struct {
 	Name     string
 	Value    int64
 	Children []*FlameNode
+	Parent   *FlameNode // Parent pointer for easier traversal (zoom, breadcrumbs)
 }
 
 // FunctionProfile holds the raw data for a function.
@@ -88,24 +89,29 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 			totalValueForView += val
 
 			for j, loc := range s.Location {
-				if len(loc.Line) == 0 {
-					continue
-				}
-				fun := loc.Line[0].Function
-				if _, ok := view.Nodes[fun.ID]; !ok {
-					view.Nodes[fun.ID] = &FuncNode{
-						ID:        fun.ID,
-						Name:      fun.Name,
-						FileName:  fun.Filename,
-						StartLine: int(loc.Line[0].Line),
-						In:        make(map[*FuncNode]int64),
-						Out:       make(map[*FuncNode]int64),
+				// To calculate cumulative value correctly, we must consider all
+				// functions in the inlined chain.
+				for _, line := range loc.Line {
+					fun := line.Function
+					if _, ok := view.Nodes[fun.ID]; !ok {
+						view.Nodes[fun.ID] = &FuncNode{
+							ID:        fun.ID,
+							Name:      fun.Name,
+							FileName:  fun.Filename,
+							StartLine: int(line.Line), // Use the line number from the Line object
+							In:        make(map[*FuncNode]int64),
+							Out:       make(map[*FuncNode]int64),
+						}
 					}
+					node := view.Nodes[fun.ID]
+					node.CumValue += val
 				}
-				node := view.Nodes[fun.ID]
-				node.CumValue += val
-				if j == 0 { // Flat value only for the top of the stack
-					node.FlatValue += val
+				// Flat value still only applies to the top of the stack (leaf-most function)
+				if j == 0 && len(loc.Line) > 0 {
+					fun := loc.Line[0].Function
+					if node, ok := view.Nodes[fun.ID]; ok {
+						node.FlatValue += val
+					}
 				}
 			}
 		}
@@ -113,21 +119,28 @@ func ParsePprofFile(reader io.Reader) (*ProfileData, error) {
 		view.TotalValue = totalValueForView
 
 		// Second pass: establish the edges (caller -> callee relationships)
+		// This part becomes more complex with inlining.
 		for _, s := range p.Sample {
 			val := s.Value[i]
 			if val == 0 {
 				continue
 			}
 			for j := 1; j < len(s.Location); j++ {
+				// The callee is the leaf of the previous location's inlined chain.
 				calleeLoc := s.Location[j-1]
-				calleeFunc := calleeLoc.Line[0].Function
-				calleeNode, ok1 := view.Nodes[calleeFunc.ID]
+				// The caller is the leaf of this location's inlined chain.
 				callerLoc := s.Location[j]
-				callerFunc := callerLoc.Line[0].Function
-				callerNode, ok2 := view.Nodes[callerFunc.ID]
-				if ok1 && ok2 {
-					callerNode.Out[calleeNode] += val
-					calleeNode.In[callerNode] += val
+
+				if len(calleeLoc.Line) > 0 && len(callerLoc.Line) > 0 {
+					calleeFunc := calleeLoc.Line[0].Function
+					callerFunc := callerLoc.Line[0].Function
+
+					calleeNode, ok1 := view.Nodes[calleeFunc.ID]
+					callerNode, ok2 := view.Nodes[callerFunc.ID]
+					if ok1 && ok2 {
+						callerNode.Out[calleeNode] += val
+						calleeNode.In[callerNode] += val
+					}
 				}
 			}
 		}
@@ -179,7 +192,7 @@ func formatNanos(n int64) string {
 }
 
 func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
-	// Step 1: Parse both profiles completely.
+	// ... (This function remains the same, no changes needed)
 	beforeData, err := ParsePprofFile(beforeReader)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse 'before' profile: %w", err)
@@ -200,7 +213,6 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 		RawPprof:      afterData.RawPprof,
 	}
 
-	// Step 2: Iterate through 'after' views to find common views to diff.
 	for _, afterView := range afterData.Views {
 		baseName := strings.Split(afterView.Name, " ")[0]
 		beforeView, ok := beforeViewsMap[baseName]
@@ -208,7 +220,6 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 			continue
 		}
 
-		// Step 3: Create the diff view and its nodes.
 		diffView := &ProfileView{
 			Name:       fmt.Sprintf("Diff: %s", strings.TrimPrefix(afterView.Name, "Diff: ")),
 			Unit:       afterView.Unit,
@@ -254,30 +265,22 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 			}
 			diffView.Nodes[id] = diffNode
 		}
-
-		// Step 4: Build the delta graph edges.
 		type edgeKey struct{ caller, callee uint64 }
 		allEdges := make(map[edgeKey]struct{})
-
-		// Collect all edges from 'before' view
 		for _, callerNode := range beforeView.Nodes {
 			for calleeNode := range callerNode.Out {
 				allEdges[edgeKey{caller: callerNode.ID, callee: calleeNode.ID}] = struct{}{}
 			}
 		}
-		// Collect all edges from 'after' view
 		for _, callerNode := range afterView.Nodes {
 			for calleeNode := range callerNode.Out {
 				allEdges[edgeKey{caller: callerNode.ID, callee: calleeNode.ID}] = struct{}{}
 			}
 		}
-
-		// For each unique edge, calculate the delta.
 		for edge := range allEdges {
 			var beforeVal, afterVal int64
 			if beforeCaller, ok := beforeView.Nodes[edge.caller]; ok {
 				if beforeCallee, ok := beforeView.Nodes[edge.callee]; ok {
-					// Need to find the specific callee node in the 'Out' map
 					for node, val := range beforeCaller.Out {
 						if node.ID == beforeCallee.ID {
 							beforeVal = val
@@ -288,7 +291,6 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 			}
 			if afterCaller, ok := afterView.Nodes[edge.caller]; ok {
 				if afterCallee, ok := afterView.Nodes[edge.callee]; ok {
-					// Need to find the specific callee node in the 'Out' map
 					for node, val := range afterCaller.Out {
 						if node.ID == afterCallee.ID {
 							afterVal = val
@@ -297,7 +299,6 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 					}
 				}
 			}
-
 			edgeDelta := afterVal - beforeVal
 			if edgeDelta == 0 {
 				continue
@@ -319,59 +320,85 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 	return diffProfileData, nil
 }
 
-func BuildFlameGraph(p *profile.Profile, sampleIndex int) *FlameNode {
-	root := &FlameNode{Name: "root", Value: 0}
+// BuildFlameGraph constructs a full, cumulative flame graph tree, correctly
+// handling inlined function calls.
+func BuildFlameGraph(p *profile.Profile, sampleIndex int, unit string) *FlameNode {
+	root := &FlameNode{Name: "root"}
+	if p == nil || len(p.Sample) == 0 || sampleIndex >= len(p.SampleType) {
+		return root
+	}
+
+	var totalValue int64
 
 	for _, s := range p.Sample {
 		val := s.Value[sampleIndex]
 		if val == 0 {
 			continue
 		}
+		totalValue += val
 
-		// The call stack is ordered from callee to caller.
-		// For a flame graph, we need to reverse it to be caller -> callee.
+		// Start with the root of our flame graph tree for this sample.
 		currentNode := root
-		root.Value += val
 
+		// Iterate through the locations in the stack, from caller to callee.
 		for i := len(s.Location) - 1; i >= 0; i-- {
 			loc := s.Location[i]
-			if len(loc.Line) == 0 {
-				continue
-			}
-			funcName := loc.Line[0].Function.Name
 
-			// Find if this function is already a child of the current node
-			var childNode *FlameNode
-			for _, child := range currentNode.Children {
-				if child.Name == funcName {
-					childNode = child
-					break
+			// Unroll the inlined functions within this location.
+			// The proto spec says the last line is the caller and previous lines
+			// were inlined into it. So we iterate backward through the lines too.
+			for j := len(loc.Line) - 1; j >= 0; j-- {
+				line := loc.Line[j]
+				funcName := line.Function.Name
+
+				var childNode *FlameNode
+				for _, child := range currentNode.Children {
+					if child.Name == funcName {
+						childNode = child
+						break
+					}
 				}
-			}
 
-			// If not found, create a new child node
-			if childNode == nil {
-				childNode = &FlameNode{Name: funcName}
-				currentNode.Children = append(currentNode.Children, childNode)
-			}
+				if childNode == nil {
+					childNode = &FlameNode{Name: funcName, Parent: currentNode}
+					currentNode.Children = append(currentNode.Children, childNode)
+				}
 
-			childNode.Value += val
-			currentNode = childNode // Move down the tree
+				// The value applies to this function and all its callers.
+				childNode.Value += val
+
+				// Descend into this frame. The next frame (either from the next
+				// inlined function or the next location) will be its child.
+				currentNode = childNode
+			}
 		}
 	}
+
+	root.Value = totalValue
+
+	sortChildren(root)
 	return root
 }
 
+// sortChildren recursively sorts children of a node by value (desc) for a stable layout.
+func sortChildren(node *FlameNode) {
+	if node == nil || len(node.Children) == 0 {
+		return
+	}
+	sort.Slice(node.Children, func(i, j int) bool {
+		return node.Children[i].Value > node.Children[j].Value
+	})
+	for _, child := range node.Children {
+		sortChildren(child)
+	}
+}
+
 // AnnotateProjectCode marks nodes that belong to the user's project module.
-// The pprof file format often includes the full module path in the function's file name.
-// For example: "github.com/your/project/package/file.go".
 func annotateProjectCode(data *ProfileData, modulePath string) {
 	if data == nil || modulePath == "" {
 		return
 	}
 
-	// Make sure the path has a trailing slash for more accurate matching
-	// to avoid matching "github.com/user/project-extra" if module is "github.com/user/project"
 	normalizedPath := modulePath
 	if !strings.HasSuffix(normalizedPath, "/") {
 		normalizedPath += "/"
@@ -379,8 +406,6 @@ func annotateProjectCode(data *ProfileData, modulePath string) {
 
 	for _, view := range data.Views {
 		for _, node := range view.Nodes {
-			// We use strings.Contains because filenames can be absolute paths.
-			// e.g., /Users/me/go/src/github.com/my/project/main.go
 			if strings.Contains(node.FileName, normalizedPath) {
 				node.IsProjectCode = true
 			}

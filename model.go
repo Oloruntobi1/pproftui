@@ -1,4 +1,3 @@
-// model.go
 package main
 
 import (
@@ -51,8 +50,9 @@ type model struct {
 	callersList list.Model
 	calleesList list.Model
 
-	// Flamegraph zoom
-	zoomedFlameRoot *FlameNode // Current zoom root (nil = full view)
+	// Flamegraph state
+	flameGraphRoot  *FlameNode // The full, cached flamegraph for the current view
+	flameGraphFocus *FlameNode // The node we are "zoomed" into
 
 	width       int
 	height      int
@@ -103,10 +103,10 @@ func newModel(data *ProfileData, sourceInfo string) model {
 	m.callersList.SetShowHelp(false)
 	m.callersList.SetShowStatusBar(false)
 
-	// Configure Callees list (FIXED)
+	// Configure Callees list
 	m.calleesList.Title = "Callees"
 	m.calleesList.SetShowHelp(false)
-	m.calleesList.SetShowStatusBar(false) // Corrected from m.callersList
+	m.calleesList.SetShowStatusBar(false)
 
 	m.setActiveView()
 	return m
@@ -253,6 +253,9 @@ func (m *model) setActiveView() {
 		title += " (Project Only)"
 	}
 	m.mainList.Title = title
+	// Invalidate flamegraph cache when view changes
+	m.flameGraphRoot = nil
+	m.flameGraphFocus = nil
 	m.resortAndSetList()
 }
 
@@ -463,30 +466,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.mode == flameGraphView {
-					m.mode = sourceView     // Toggle back to source view
-					m.zoomedFlameRoot = nil // Reset zoom when exiting flamegraph
+					m.mode = sourceView // Toggle back to source view
+					m.flameGraphFocus = nil
 				} else {
 					m.mode = flameGraphView
 				}
 				return m, nil
 			case "enter":
 				if m.mode == flameGraphView {
-					// Zoom into the selected function from the main list
 					selected, ok := m.mainList.SelectedItem().(listItem)
-					if ok {
-						// Find this function in the flamegraph
-						currentViewIndex := m.currentViewIndex
-						flameRoot := BuildFlameGraph(m.profileData.RawPprof, currentViewIndex)
-						if targetNode := findNodeByName(flameRoot, selected.node.Name); targetNode != nil {
-							m.zoomedFlameRoot = targetNode
+					if ok && m.flameGraphRoot != nil {
+						// Find this function in the flamegraph and set as focus
+						if targetNode := findNodeByName(m.flameGraphRoot, selected.node.Name); targetNode != nil {
+							m.flameGraphFocus = targetNode
 						}
 					}
 					return m, nil
 				}
 			case "esc":
-				if m.mode == flameGraphView && m.zoomedFlameRoot != nil {
+				if m.mode == flameGraphView && m.flameGraphFocus != m.flameGraphRoot {
 					// Zoom out to full view
-					m.zoomedFlameRoot = nil
+					m.flameGraphFocus = m.flameGraphRoot
 					return m, nil
 				}
 			case "r":
@@ -540,23 +540,32 @@ func (m model) View() string {
 	} else if m.mode == graphView {
 		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
 	} else {
-		currentViewIndex := m.currentViewIndex
-		flameRoot := BuildFlameGraph(m.profileData.RawPprof, currentViewIndex)
+		if m.flameGraphRoot == nil {
+			// --- THIS IS THE LINE TO CHANGE ---
+			currentView := m.profileData.Views[m.currentViewIndex]
+			m.flameGraphRoot = BuildFlameGraph(m.profileData.RawPprof, m.currentViewIndex, currentView.Unit)
+			// --- END OF CHANGE ---
 
-		// Use zoomed root if we're zoomed in
-		displayRoot := flameRoot
-		if m.zoomedFlameRoot != nil {
-			displayRoot = m.zoomedFlameRoot
+			m.flameGraphFocus = m.flameGraphRoot // Default focus to root
+		}
+
+		// The node to highlight is the one selected in the list
+		var viewNode *FlameNode
+		selected, ok := m.mainList.SelectedItem().(listItem)
+		if ok {
+			viewNode = findNodeByName(m.flameGraphRoot, selected.node.Name)
 		}
 
 		rightPaneWidth := m.source.Width
-		rightPane = RenderFlameGraph(displayRoot, rightPaneWidth)
+		// Use the root's value as the total, since it's now correctly calculated
+		totalValue := m.flameGraphRoot.Value
+		rightPane = RenderFlameGraph(m.flameGraphRoot, m.flameGraphFocus, viewNode, rightPaneWidth, totalValue)
 	}
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
 
 	var statusText string
 	if m.mode == flameGraphView {
-		if m.zoomedFlameRoot != nil {
+		if m.flameGraphFocus != m.flameGraphRoot {
 			statusText = m.styles.Status.Render(
 				"F1 help | esc zoom out | f exit flame | t view | q quit",
 			)

@@ -268,7 +268,7 @@ func (m *model) setActiveView() {
 	m.flameGraphRoot = nil
 	m.flameGraphFocus = nil
 	m.flameGraphHover = nil
-	m.flameGraphLayout = nil
+	*m.flameGraphLayout = nil
 	m.resortAndSetList()
 }
 

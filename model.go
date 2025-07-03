@@ -496,6 +496,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "t":
 				m.currentViewIndex = (m.currentViewIndex + 1) % len(m.profileData.Views)
 				m.setActiveView()
+				if m.mode == flameGraphView {
+					m.rebuildFlameGraph()
+				}
 				return m, nil
 			case "c":
 				if m.mode == sourceView {
@@ -513,10 +516,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.mode == flameGraphView {
-					m.mode = sourceView // Toggle back to source view
+					m.mode = sourceView // Toggle back
+					m.flameGraphRoot = nil
 					m.flameGraphFocus = nil
 				} else {
 					m.mode = flameGraphView
+					m.rebuildFlameGraph()
 				}
 				return m, nil
 			case "enter":
@@ -545,7 +550,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "p":
 				m.showProjectOnly = !m.showProjectOnly
-				m.setActiveView() // Re-render the view with the new filter state
+				m.setActiveView() // This invalidates the old list and flamegraph
+				if m.mode == flameGraphView {
+					m.rebuildFlameGraph()
+				}
 				return m, nil
 			}
 		}
@@ -569,6 +577,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m *model) rebuildFlameGraph() {
+	currentView := m.profileData.Views[m.currentViewIndex]
+	m.flameGraphRoot = BuildFlameGraph(m.profileData.RawPprof, m.currentViewIndex, currentView.Unit)
+	// Reset focus to the root of the new graph
+	m.flameGraphFocus = m.flameGraphRoot
+}
+
 func (m model) View() string {
 	if m.showHelp {
 		return m.styles.Base.Render(m.helpView.View())
@@ -586,13 +601,6 @@ func (m model) View() string {
 	} else if m.mode == graphView {
 		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
 	} else {
-		// Lazily build the flame graph
-		if m.flameGraphRoot == nil {
-			currentView := m.profileData.Views[m.currentViewIndex]
-			m.flameGraphRoot = BuildFlameGraph(m.profileData.RawPprof, m.currentViewIndex, currentView.Unit)
-			m.flameGraphFocus = m.flameGraphRoot
-		}
-
 		var viewNode *FlameNode
 		selected, ok := m.mainList.SelectedItem().(listItem)
 		if ok {

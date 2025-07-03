@@ -180,12 +180,12 @@ func getColorForPercentage(percentage float64) lipgloss.Color {
 
 // RenderFlameGraph renders the entire flame graph as a string.
 func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWidth int, totalValue int64) (string, []FlameNodeRenderInfo) {
-	if root == nil || root.Value == 0 || termWidth <= 0 {
+	if root == nil || focusNode == nil || focusNode.Value == 0 || termWidth <= 0 {
 		return "No data to render in flame graph.", nil
 	}
 
 	layout := generateFlameGraphLayout(root, focusNode, termWidth)
-	depthLevels := groupNodesByTrueDepth(root)
+	depthLevels := groupNodesByRelativeDepth(focusNode)
 	renderInfos := make([]FlameNodeRenderInfo, 0)
 
 	// To keep rendering in depth order
@@ -197,6 +197,9 @@ func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWid
 	}
 
 	focusPathSet := make(map[*FlameNode]struct{})
+	// The focus path is now just the focus node itself, since it's the root of our view.
+	focusPathSet[focusNode] = struct{}{}
+	// We find the path to the focus node to correctly dim its parents if they are visible
 	for _, node := range findPathToNode(focusNode) {
 		focusPathSet[node] = struct{}{}
 	}
@@ -211,7 +214,12 @@ func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWid
 
 		// Sort nodes in this row by layout offset
 		sort.Slice(nodes, func(i, j int) bool {
-			return layout[nodes[i]].Offset < layout[nodes[j]].Offset
+			li, ok_i := layout[nodes[i]]
+			lj, ok_j := layout[nodes[j]]
+			if !ok_i || !ok_j {
+				return false
+			}
+			return li.Offset < lj.Offset
 		})
 
 		cursor := 0
@@ -224,7 +232,7 @@ func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWid
 			renderInfos = append(renderInfos, FlameNodeRenderInfo{
 				Node:  node,
 				X:     nodeLayout.Offset,
-				Y:     depth,
+				Y:     depth, // Use the relative depth for the Y coordinate
 				Width: nodeLayout.Width,
 			})
 
@@ -233,6 +241,7 @@ func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWid
 				b.WriteString(strings.Repeat(" ", padding))
 			}
 
+			// ... The rest of the function remains the same ...
 			percent := 0.0
 			if totalValue > 0 {
 				percent = (float64(node.Value) / float64(totalValue)) * 100
@@ -280,8 +289,12 @@ func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWid
 	return b.String(), renderInfos
 }
 
-func groupNodesByTrueDepth(root *FlameNode) map[int][]*FlameNode {
+func groupNodesByRelativeDepth(startNode *FlameNode) map[int][]*FlameNode {
 	levels := make(map[int][]*FlameNode)
+	if startNode == nil {
+		return levels
+	}
+
 	var visit func(n *FlameNode, depth int)
 	visit = func(n *FlameNode, depth int) {
 		if n == nil {
@@ -292,6 +305,7 @@ func groupNodesByTrueDepth(root *FlameNode) map[int][]*FlameNode {
 			visit(child, depth+1)
 		}
 	}
-	visit(root, 0)
+	// Start the traversal from the provided startNode at relative depth 0.
+	visit(startNode, 0)
 	return levels
 }

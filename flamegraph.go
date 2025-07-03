@@ -8,10 +8,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// FlameGraphLayout holds the calculated position and size for a node.
-type FlameGraphLayout struct {
-	Offset int
-	Width  int
+// FlameNodeRenderInfo holds the position and size of a rendered flame graph node,
+// used for hit detection (hovering).
+type FlameNodeRenderInfo struct {
+	Node  *FlameNode
+	X, Y  int
+	Width int
 }
 
 // remainderItem is used for sorting during the apportionment process.
@@ -57,7 +59,7 @@ func apportion(values []float64, totalWidth int) []int {
 			return items[i].Remain > items[j].Remain
 		})
 
-		for i := 0; i < remainder; i++ {
+		for i := 0; i < remainder && i < len(items); i++ {
 			items[i].Value++
 		}
 	}
@@ -107,9 +109,14 @@ func findPathToNode(target *FlameNode) []*FlameNode {
 	return path
 }
 
+type FlameGraphLayoutInfo struct {
+	Offset int
+	Width  int
+}
+
 // generateFlameGraphLayout calculates the offset and width for every node.
-func generateFlameGraphLayout(root, focusNode *FlameNode, totalWidth int) map[*FlameNode]FlameGraphLayout {
-	layout := make(map[*FlameNode]FlameGraphLayout)
+func generateFlameGraphLayout(root, focusNode *FlameNode, totalWidth int) map[*FlameNode]FlameGraphLayoutInfo {
+	layout := make(map[*FlameNode]FlameGraphLayoutInfo)
 	if root == nil || focusNode == nil || totalWidth <= 0 {
 		return layout
 	}
@@ -117,7 +124,7 @@ func generateFlameGraphLayout(root, focusNode *FlameNode, totalWidth int) map[*F
 	// The focus node and its parents get 100% width
 	path := findPathToNode(focusNode)
 	for _, node := range path {
-		layout[node] = FlameGraphLayout{Offset: 0, Width: totalWidth}
+		layout[node] = FlameGraphLayoutInfo{Offset: 0, Width: totalWidth}
 	}
 
 	// Use a queue to process nodes level by level (BFS)
@@ -143,7 +150,7 @@ func generateFlameGraphLayout(root, focusNode *FlameNode, totalWidth int) map[*F
 		for i, child := range parent.Children {
 			width := childWidths[i]
 			if width > 0 {
-				layout[child] = FlameGraphLayout{Offset: childOffset, Width: width}
+				layout[child] = FlameGraphLayoutInfo{Offset: childOffset, Width: width}
 				queue = append(queue, child)
 			}
 			childOffset += width
@@ -151,29 +158,6 @@ func generateFlameGraphLayout(root, focusNode *FlameNode, totalWidth int) map[*F
 	}
 
 	return layout
-}
-
-// groupNodesByDepth organizes nodes into a slice of slices, where each inner slice represents a level.
-func groupNodesByDepth(root *FlameNode) [][]*FlameNode {
-	if root == nil {
-		return nil
-	}
-	var levels [][]*FlameNode
-	queue := []*FlameNode{root}
-	for len(queue) > 0 {
-		levelSize := len(queue)
-		currentLevel := make([]*FlameNode, 0, levelSize)
-		for i := 0; i < levelSize; i++ {
-			node := queue[0]
-			queue = queue[1:]
-			currentLevel = append(currentLevel, node)
-			queue = append(queue, node.Children...)
-		}
-		if len(currentLevel) > 0 {
-			levels = append(levels, currentLevel)
-		}
-	}
-	return levels
 }
 
 // getColorForPercentage returns a color based on how "hot" a function is.
@@ -195,13 +179,14 @@ func getColorForPercentage(percentage float64) lipgloss.Color {
 }
 
 // RenderFlameGraph renders the entire flame graph as a string.
-func RenderFlameGraph(root, focusNode, viewNode *FlameNode, termWidth int, totalValue int64) string {
+func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWidth int, totalValue int64) (string, []FlameNodeRenderInfo) {
 	if root == nil || root.Value == 0 || termWidth <= 0 {
-		return "No data to render in flame graph."
+		return "No data to render in flame graph.", nil
 	}
 
 	layout := generateFlameGraphLayout(root, focusNode, termWidth)
 	depthLevels := groupNodesByTrueDepth(root)
+	renderInfos := make([]FlameNodeRenderInfo, 0)
 
 	// To keep rendering in depth order
 	maxDepth := 0
@@ -219,7 +204,10 @@ func RenderFlameGraph(root, focusNode, viewNode *FlameNode, termWidth int, total
 	var b strings.Builder
 
 	for depth := 0; depth <= maxDepth; depth++ {
-		nodes := depthLevels[depth]
+		nodes, exists := depthLevels[depth]
+		if !exists {
+			continue
+		}
 
 		// Sort nodes in this row by layout offset
 		sort.Slice(nodes, func(i, j int) bool {
@@ -233,12 +221,22 @@ func RenderFlameGraph(root, focusNode, viewNode *FlameNode, termWidth int, total
 				continue
 			}
 
+			renderInfos = append(renderInfos, FlameNodeRenderInfo{
+				Node:  node,
+				X:     nodeLayout.Offset,
+				Y:     depth,
+				Width: nodeLayout.Width,
+			})
+
 			padding := nodeLayout.Offset - cursor
 			if padding > 0 {
 				b.WriteString(strings.Repeat(" ", padding))
 			}
 
-			percent := float64(node.Value) / float64(totalValue) * 100
+			percent := 0.0
+			if totalValue > 0 {
+				percent = (float64(node.Value) / float64(totalValue)) * 100
+			}
 			color := getColorForPercentage(percent)
 			style := lipgloss.NewStyle().
 				Background(color).
@@ -247,17 +245,22 @@ func RenderFlameGraph(root, focusNode, viewNode *FlameNode, termWidth int, total
 			if _, inFocusPath := focusPathSet[node]; !inFocusPath {
 				style = style.Faint(true)
 			}
-			if node == viewNode {
+			if node == hoveredNode {
+				// Hover style overrides other styles
+				style = lipgloss.NewStyle().Background(lipgloss.Color("228")).Foreground(lipgloss.Color("0")) // Light yellow
+			} else if node == viewNode {
 				style = style.Underline(true).Bold(true).Background(lipgloss.Color("99"))
 			}
 
-			label := fmt.Sprintf("%s (%.1f%%)", node.Name, percent)
-			if len(label) > nodeLayout.Width {
-				if len(node.Name) <= nodeLayout.Width {
-					label = node.Name
-				} else {
-					label = label[:nodeLayout.Width]
-				}
+			// Truncate name logic
+			parts := strings.Split(node.Name, "/")
+			name := parts[len(parts)-1]
+			label := fmt.Sprintf("%s (%.1f%%)", name, percent)
+			if lipgloss.Width(label) > nodeLayout.Width {
+				label = name
+			}
+			if lipgloss.Width(label) > nodeLayout.Width {
+				label = label[:nodeLayout.Width]
 			}
 
 			bar := style.Render(label)
@@ -274,13 +277,16 @@ func RenderFlameGraph(root, focusNode, viewNode *FlameNode, termWidth int, total
 		b.WriteString("\n")
 	}
 
-	return b.String()
+	return b.String(), renderInfos
 }
 
 func groupNodesByTrueDepth(root *FlameNode) map[int][]*FlameNode {
 	levels := make(map[int][]*FlameNode)
 	var visit func(n *FlameNode, depth int)
 	visit = func(n *FlameNode, depth int) {
+		if n == nil {
+			return
+		}
 		levels[depth] = append(levels[depth], n)
 		for _, child := range n.Children {
 			visit(child, depth+1)

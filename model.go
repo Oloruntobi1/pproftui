@@ -51,8 +51,10 @@ type model struct {
 	calleesList list.Model
 
 	// Flamegraph state
-	flameGraphRoot  *FlameNode // The full, cached flamegraph for the current view
-	flameGraphFocus *FlameNode // The node we are "zoomed" into
+	flameGraphRoot   *FlameNode             // The full, cached flamegraph for the current view
+	flameGraphFocus  *FlameNode             // The node we are "zoomed" into
+	flameGraphHover  *FlameNode             // The node currently under the mouse cursor
+	flameGraphLayout *[]FlameNodeRenderInfo // Layout info for hit detection (pointer for modification in View)
 
 	width       int
 	height      int
@@ -95,6 +97,7 @@ func newModel(data *ProfileData, sourceInfo string) model {
 		calleesList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
 		source:           viewport.New(0, 0),
 		styles:           styles,
+		flameGraphLayout: &[]FlameNodeRenderInfo{},
 	}
 	m.source.Style = styles.Source
 
@@ -264,6 +267,8 @@ func (m *model) setActiveView() {
 	// Invalidate flamegraph cache when view changes
 	m.flameGraphRoot = nil
 	m.flameGraphFocus = nil
+	m.flameGraphHover = nil
+	m.flameGraphLayout = nil
 	m.resortAndSetList()
 }
 
@@ -424,12 +429,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-
 		m.applyPaneSizes()
-
 		if !m.ready {
 			m.ready = true
 			m.updateChildPanes()
+		}
+
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionMotion && m.mode == flameGraphView {
+			// Calculate the starting position of the right pane.
+			leftPaneRenderedWidth := lipgloss.Width(m.styles.List.Render(m.mainList.View()))
+			headerHeight := lipgloss.Height(m.renderDiagnosticHeader())
+
+			rpStyle := m.styles.Source
+			rpTopPadding, _, _, rpLeftPadding := rpStyle.GetPadding()
+
+			calculatedOriginY := headerHeight + rpStyle.GetBorderTopSize() + rpTopPadding
+
+			// The true origin is the calculated one minus the observed offset.
+			contentOriginY := calculatedOriginY - 2
+
+			contentOriginX := leftPaneRenderedWidth + rpStyle.GetBorderLeftSize() + rpLeftPadding
+
+			// Get mouse coordinates relative to the flamegraph's content area.
+			relativeX := msg.X - contentOriginX
+			relativeY := msg.Y - contentOriginY
+
+			// Hit detection.
+			found := false
+			if m.flameGraphLayout != nil {
+				for _, info := range *m.flameGraphLayout {
+					// Check if the cursor is within the bounds of a rendered node.
+					if relativeY == info.Y && relativeX >= info.X && relativeX < info.X+info.Width {
+						m.flameGraphHover = info.Node
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				m.flameGraphHover = nil
+			}
 		}
 
 	case tea.KeyMsg:
@@ -437,7 +477,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "f1":
 				viewExplanation := getExplanationForView(m.mainList.Title)
-
 				flatCumExplanation := explainerMap["flat_vs_cum"]
 				flameGraphExplanation := explainerMap["flamegraph"]
 
@@ -484,7 +523,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.mode == flameGraphView {
 					selected, ok := m.mainList.SelectedItem().(listItem)
 					if ok && m.flameGraphRoot != nil {
-						// Find this function in the flamegraph and set as focus
 						if targetNode := findNodeByName(m.flameGraphRoot, selected.node.Name); targetNode != nil {
 							m.flameGraphFocus = targetNode
 						}
@@ -492,9 +530,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			case "esc":
-				if m.mode == flameGraphView && m.flameGraphFocus != m.flameGraphRoot {
-					// Zoom out to full view
-					m.flameGraphFocus = m.flameGraphRoot
+				if m.mode == flameGraphView && m.flameGraphFocus != m.flameGraphRoot && m.flameGraphFocus != nil {
+					// Zoom out to parent if zoomed in, otherwise go to root
+					if m.flameGraphFocus.Parent != nil {
+						m.flameGraphFocus = m.flameGraphFocus.Parent
+					} else {
+						m.flameGraphFocus = m.flameGraphRoot
+					}
 					return m, nil
 				}
 			case "r":
@@ -510,8 +552,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// This block handles updates for navigation and child panes.
-	// It's placed after the main switch to allow the list to process
-	// navigation keys that aren't captured above (like up/down arrows).
 	beforeIndex := m.mainList.Index()
 	m.mainList, _ = m.mainList.Update(msg)
 	if beforeIndex != m.mainList.Index() {
@@ -538,26 +578,21 @@ func (m model) View() string {
 		return "Initializing..."
 	}
 
-	// 1. Render the header
 	header := m.renderDiagnosticHeader()
-
-	// 2. Render the middle panes
 	var rightPane string
+
 	if m.mode == sourceView {
 		rightPane = m.styles.Source.Render(m.source.View())
 	} else if m.mode == graphView {
 		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
 	} else {
+		// Lazily build the flame graph
 		if m.flameGraphRoot == nil {
-			// --- THIS IS THE LINE TO CHANGE ---
 			currentView := m.profileData.Views[m.currentViewIndex]
 			m.flameGraphRoot = BuildFlameGraph(m.profileData.RawPprof, m.currentViewIndex, currentView.Unit)
-			// --- END OF CHANGE ---
-
-			m.flameGraphFocus = m.flameGraphRoot // Default focus to root
+			m.flameGraphFocus = m.flameGraphRoot
 		}
 
-		// The node to highlight is the one selected in the list
 		var viewNode *FlameNode
 		selected, ok := m.mainList.SelectedItem().(listItem)
 		if ok {
@@ -565,17 +600,66 @@ func (m model) View() string {
 		}
 
 		rightPaneWidth := m.source.Width
-		// Use the root's value as the total, since it's now correctly calculated
-		totalValue := m.flameGraphRoot.Value
-		rightPane = RenderFlameGraph(m.flameGraphRoot, m.flameGraphFocus, viewNode, rightPaneWidth, totalValue)
+		totalValue := int64(0)
+		if m.flameGraphRoot != nil {
+			totalValue = m.flameGraphRoot.Value
+		}
+
+		// Render the graph and get layout info for hit detection
+		var renderedGraph string
+		var newLayout []FlameNodeRenderInfo
+		renderedGraph, newLayout = RenderFlameGraph(m.flameGraphRoot, m.flameGraphFocus, viewNode, m.flameGraphHover, rightPaneWidth, totalValue)
+		*m.flameGraphLayout = newLayout // Update layout info in the model
+
+		// Prepare hover details string
+		var hoverDetails string
+		if m.flameGraphHover != nil {
+			currentView := m.profileData.Views[m.currentViewIndex]
+			percentOfTotal := 0.0
+			if totalValue > 0 {
+				percentOfTotal = (float64(m.flameGraphHover.Value) / float64(totalValue)) * 100
+			}
+			hoverDetails = fmt.Sprintf("Hover: %s | %s | %.1f%% of total",
+				m.flameGraphHover.Name,
+				formatValue(m.flameGraphHover.Value, currentView.Unit),
+				percentOfTotal,
+			)
+		}
+
+		// Combine graph with an optional details bar at the bottom
+		var finalRender strings.Builder
+		finalRender.WriteString(renderedGraph)
+		detailsBar := m.styles.Status.Width(rightPaneWidth).Render(hoverDetails)
+		// We subtract 1 because the status bar takes one line.
+		paneContentHeight := m.source.Height
+		graphHeight := lipgloss.Height(renderedGraph)
+
+		if hoverDetails != "" {
+			// If there's space, add it below. Otherwise, overwrite the last line of the graph.
+			if graphHeight < paneContentHeight {
+				finalRender.WriteString(strings.Repeat("\n", paneContentHeight-graphHeight-1))
+				finalRender.WriteString(detailsBar)
+			} else {
+				// Overwrite last line
+				lines := strings.Split(renderedGraph, "\n")
+				if len(lines) > 1 {
+					lines[len(lines)-2] = detailsBar
+					finalRender.Reset()
+					finalRender.WriteString(strings.Join(lines[:len(lines)-1], "\n"))
+				}
+			}
+		}
+
+		rightPane = m.styles.Source.Render(finalRender.String())
 	}
+
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
 
 	var statusText string
 	if m.mode == flameGraphView {
 		if m.flameGraphFocus != m.flameGraphRoot {
 			statusText = m.styles.Status.Render(
-				"F1 help | esc zoom out | f exit flame | t view | q quit",
+				"F1 help | esc zoom out | enter zoom in | f exit flame | q quit",
 			)
 		} else {
 			statusText = m.styles.Status.Render(
@@ -598,7 +682,6 @@ func (m model) View() string {
 		statusText = m.styles.Status.Render(strings.Join(helpItems, " | "))
 	}
 
-	// 4. Join them all vertically
 	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, header, panes, statusText))
 }
 

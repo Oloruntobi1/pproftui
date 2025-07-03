@@ -2,7 +2,7 @@
 package main
 
 import (
-	"flag" // NEW
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -57,7 +57,7 @@ func main() {
 	}
 
 	m := newModel(profileData, sourceInfo)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	if _, err := p.Run(); err != nil {
 		log.Fatal("Error running program:", err)
 	}

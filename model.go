@@ -141,7 +141,16 @@ func (i listItem) Description() string {
 
 	// Case 1: Caller/Callee context.
 	if i.contextNode != nil {
-		// Sub-case 1A: Diff view
+		// Special handling for recursive calls, where the function appears in its own
+		// caller/callee list.
+		if i.node == i.contextNode {
+			edgeStr := formatValue(i.edgeValue, i.unit)
+			percent := formatPercent(i.edgeValue, i.node.CumValue)
+			// This single, clear description works for both the Callers and Callees panes.
+			return fmt.Sprintf("This function is recursive; its self-calls account for %s (%s of the total)", edgeStr, percent)
+		}
+
+		// Sub-case 1A: Diff view (original logic is preserved)
 		if isDiff {
 			edgeStr := formatDelta(i.edgeValue, i.unit, i.styles)
 			if i.isCaller {
@@ -150,7 +159,7 @@ func (i listItem) Description() string {
 			return fmt.Sprintf("was called by the selected function, and that call changed by %s", edgeStr)
 		}
 
-		// Sub-case 1B: Normal caller/callee view
+		// Sub-case 1B: Normal (non-recursive) caller/callee view
 		edgeStr := formatValue(i.edgeValue, i.unit)
 		if i.isCaller {
 			percent := formatPercent(i.edgeValue, i.node.CumValue)

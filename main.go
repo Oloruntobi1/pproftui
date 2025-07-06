@@ -9,13 +9,38 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
 	modulePath := flag.String("module-path", "", "Root module path of your project (e.g., github.com/user/repo) to highlight relevant code.")
+
+	liveURL := flag.String("live", "", "HTTP URL of a live pprof endpoint to poll (e.g., http://localhost:6060/debug/pprof/profile?seconds=5).")
+	refreshInterval := flag.Duration("refresh", 5*time.Second, "Refresh interval for live mode.")
+
 	flag.Parse()
+
+	if *liveURL != "" {
+		// In live mode, we initialize the model without data.
+		// The first fetch will happen as a command.
+		// The sourceInfo will just be the URL.
+		m := newModel(nil, *liveURL)
+		m.isLiveMode = true
+		m.liveURL = *liveURL
+		m.refreshInterval = *refreshInterval
+
+		if *modulePath != "" {
+			m.modulePath = *modulePath
+		}
+
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+		if _, err := p.Run(); err != nil {
+			log.Fatal("Error running program:", err)
+		}
+		return
+	}
 
 	args := flag.Args()
 

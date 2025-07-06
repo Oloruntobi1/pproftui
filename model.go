@@ -35,7 +35,20 @@ const (
 	flameGraphView
 )
 
+type tickMsg time.Time
+
+type profileUpdateMsg struct {
+	data *ProfileData
+}
+
+type profileUpdateErr struct {
+	err error
+}
+
+func (e profileUpdateErr) Error() string { return e.err.Error() }
+
 type model struct {
+	// Core Data
 	profileData      *ProfileData
 	currentViewIndex int
 	mode             viewMode
@@ -44,6 +57,14 @@ type model struct {
 	isDiffMode       bool
 	showProjectOnly  bool
 
+	// Live Mode State
+	isLiveMode      bool
+	isPaused        bool
+	liveURL         string
+	refreshInterval time.Duration
+	modulePath      string
+	lastError       error
+
 	// UI components
 	mainList    list.Model
 	source      viewport.Model
@@ -51,19 +72,19 @@ type model struct {
 	calleesList list.Model
 
 	// Flamegraph state
-	flameGraphRoot   *FlameNode             // The full, cached flamegraph for the current view
-	flameGraphFocus  *FlameNode             // The node we are "zoomed" into
-	flameGraphHover  *FlameNode             // The node currently under the mouse cursor
-	flameGraphLayout *[]FlameNodeRenderInfo // Layout info for hit detection (pointer for modification in View)
+	flameGraphRoot   *FlameNode
+	flameGraphFocus  *FlameNode
+	flameGraphHover  *FlameNode
+	flameGraphLayout *[]FlameNodeRenderInfo
 
+	// General State
 	width       int
 	height      int
 	layoutIndex int
-
-	styles   Styles
-	ready    bool
-	showHelp bool
-	helpView viewport.Model
+	styles      Styles
+	ready       bool
+	showHelp    bool
+	helpView    viewport.Model
 }
 
 type listItem struct {
@@ -98,20 +119,23 @@ func newModel(data *ProfileData, sourceInfo string) model {
 		source:           viewport.New(0, 0),
 		styles:           styles,
 		flameGraphLayout: &[]FlameNodeRenderInfo{},
+		isPaused:         false, // Default to not paused
 	}
 	m.source.Style = styles.Source
 
-	// Configure Callers list
+	// Configure lists
 	m.callersList.Title = "Callers"
 	m.callersList.SetShowHelp(false)
 	m.callersList.SetShowStatusBar(false)
-
-	// Configure Callees list
 	m.calleesList.Title = "Callees"
 	m.calleesList.SetShowHelp(false)
 	m.calleesList.SetShowStatusBar(false)
 
-	m.setActiveView()
+	// If data is provided initially (static mode), set the active view.
+	if data != nil {
+		m.setActiveView()
+	}
+
 	return m
 }
 
@@ -267,6 +291,13 @@ func (m *model) applyPaneSizes() {
 }
 
 func (m *model) setActiveView() {
+	if m.profileData == nil || len(m.profileData.Views) == 0 {
+		return
+	}
+	// Make sure view index is valid
+	if m.currentViewIndex >= len(m.profileData.Views) {
+		m.currentViewIndex = 0
+	}
 	currentView := m.profileData.Views[m.currentViewIndex]
 	title := fmt.Sprintf("View: %s", currentView.Name)
 	if m.showProjectOnly {
@@ -282,6 +313,9 @@ func (m *model) setActiveView() {
 }
 
 func (m *model) resortAndSetList() {
+	if m.profileData == nil || len(m.profileData.Views) == 0 {
+		return
+	}
 	currentView := m.profileData.Views[m.currentViewIndex]
 	nodes := make([]*FuncNode, 0, len(currentView.Nodes))
 	for _, node := range currentView.Nodes {
@@ -403,7 +437,16 @@ func (m *model) updateGraphLists(selectedNode *FuncNode) {
 	m.calleesList.SetItems(calleeItems)
 }
 
-func (m model) Init() tea.Cmd { return nil }
+func (m model) Init() tea.Cmd {
+	if m.isLiveMode {
+		// For live mode, we start with an initial fetch and then start the ticker.
+		return tea.Batch(
+			fetchProfileCmd(m.liveURL, m.modulePath),
+			tickerCmd(m.refreshInterval),
+		)
+	}
+	return nil // No initial command for static mode
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -441,8 +484,58 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyPaneSizes()
 		if !m.ready {
 			m.ready = true
-			m.updateChildPanes()
+			// In static mode, this updates child panes. In live mode, we wait for data.
+			if !m.isLiveMode {
+				m.updateChildPanes()
+			}
 		}
+	case tickMsg:
+		if m.isLiveMode && !m.isPaused {
+			cmds = append(cmds, fetchProfileCmd(m.liveURL, m.modulePath))
+		}
+		// Always return the ticker command to keep it going even if paused
+		cmds = append(cmds, tickerCmd(m.refreshInterval))
+		return m, tea.Batch(cmds...)
+
+	case profileUpdateMsg:
+		m.lastError = nil // Clear any previous error
+
+		// Remember what function is currently selected to preserve state
+		var selectedFuncName string
+		if selected, ok := m.mainList.SelectedItem().(listItem); ok {
+			selectedFuncName = selected.node.Name
+		}
+
+		m.profileData = msg.data
+
+		// If this is the first data load, set up the view
+		if m.mainList.Items() == nil {
+			m.setActiveView()
+		} else { // Otherwise, just refresh the list content
+			m.resortAndSetList()
+		}
+
+		// Restore selection if possible
+		if selectedFuncName != "" {
+			for i, item := range m.mainList.Items() {
+				if li, ok := item.(listItem); ok && li.node.Name == selectedFuncName {
+					m.mainList.Select(i)
+					break
+				}
+			}
+		}
+
+		// Refresh all dependent panes
+		m.updateChildPanes()
+		if m.mode == flameGraphView {
+			m.rebuildFlameGraph()
+		}
+
+		return m, nil
+
+	case profileUpdateErr:
+		m.lastError = msg.err
+		return m, nil
 
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionMotion && m.mode == flameGraphView {
@@ -484,6 +577,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.mainList.FilterState() != list.Filtering {
 			switch msg.String() {
+			case " ": // Spacebar to pause/resume
+				if m.isLiveMode {
+					m.isPaused = !m.isPaused
+					m.lastError = nil // Clear error on resume/pause
+				}
+				return m, nil
 			case "f1":
 				viewExplanation := getExplanationForView(m.mainList.Title)
 				flatCumExplanation := explainerMap["flat_vs_cum"]
@@ -503,10 +602,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c", "q":
 				return m, tea.Quit
 			case "t":
-				m.currentViewIndex = (m.currentViewIndex + 1) % len(m.profileData.Views)
-				m.setActiveView()
-				if m.mode == flameGraphView {
-					m.rebuildFlameGraph()
+				if m.profileData != nil && len(m.profileData.Views) > 0 {
+					m.currentViewIndex = (m.currentViewIndex + 1) % len(m.profileData.Views)
+					m.setActiveView()
+					if m.mode == flameGraphView {
+						m.rebuildFlameGraph()
+					}
 				}
 				return m, nil
 			case "c":
@@ -699,6 +800,16 @@ func (m model) View() string {
 		statusText = m.styles.Status.Render(strings.Join(helpItems, " | "))
 	}
 
+	var liveHelp string
+	if m.isLiveMode {
+		if m.isPaused {
+			liveHelp = "space resume"
+		} else {
+			liveHelp = "space pause"
+		}
+		statusText = m.styles.Status.Render(strings.TrimRight(statusText, " ") + " | " + liveHelp)
+	}
+
 	return m.styles.Base.Render(lipgloss.JoinVertical(lipgloss.Left, header, panes, statusText))
 }
 
@@ -721,8 +832,29 @@ func abs(x int64) int64 {
 }
 
 func (m model) renderDiagnosticHeader() string {
+	var topContent string
+
+	// Show live status first if applicable
+	if m.isLiveMode {
+		var liveStatus string
+		if m.lastError != nil {
+			liveStatus = m.styles.DiffNegative.Render(fmt.Sprintf("LIVE (ERROR): %v", m.lastError))
+		} else if m.isPaused {
+			liveStatus = m.styles.ProjectCode.Render("LIVE (PAUSED)")
+		} else {
+			liveStatus = m.styles.DiffPositive.Render("LIVE (RUNNING)")
+		}
+		topContent = lipgloss.JoinHorizontal(lipgloss.Left,
+			m.styles.Status.Render(m.sourceInfo),
+			" ",
+			liveStatus,
+		)
+	} else {
+		topContent = m.styles.Status.Render(m.sourceInfo)
+	}
+
 	if m.profileData == nil || len(m.profileData.Views) == 0 {
-		return ""
+		return m.styles.Header.Render(topContent)
 	}
 
 	currentView := m.profileData.Views[m.currentViewIndex]
@@ -773,5 +905,9 @@ func (m model) renderDiagnosticHeader() string {
 	content.WriteString(m.sourceInfo)
 	content.WriteString("\n" + diagnosticText)
 
-	return m.styles.Header.Render(content.String())
+	if diagnosticText == "" {
+		return m.styles.Header.Render(topContent)
+	}
+
+	return m.styles.Header.Render(lipgloss.JoinVertical(lipgloss.Left, topContent, "  "+diagnosticText))
 }

@@ -257,7 +257,7 @@ func RenderFlameGraph(root, focusNode, viewNode, hoveredNode *FlameNode, termWid
 			if node == hoveredNode {
 				// Hover style overrides other styles
 				style = lipgloss.NewStyle().Background(lipgloss.Color("228")).Foreground(lipgloss.Color("0")) // Light yellow
-			} else if node == viewNode {
+			} else if viewNode != nil && node.Name == viewNode.Name {
 				style = style.Underline(true).Bold(true).Background(lipgloss.Color("99"))
 			}
 

@@ -123,6 +123,8 @@ func newModel(data *ProfileData, sourceInfo string) model {
 	}
 	m.source.Style = styles.Source
 
+	m.mainList.SetShowHelp(false)
+
 	// Configure lists
 	m.callersList.Title = "Callers"
 	m.callersList.SetShowHelp(false)
@@ -454,7 +456,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.showHelp {
 		if msg, ok := msg.(tea.KeyMsg); ok {
 			switch msg.String() {
-			case "f1", "q", "esc":
+			case "f1", "?", "q", "esc":
 				m.showHelp = false
 			}
 		}
@@ -583,7 +585,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.lastError = nil // Clear error on resume/pause
 				}
 				return m, nil
-			case "f1":
+			case "f1", "?":
 				viewExplanation := getExplanationForView(m.mainList.Title)
 				flatCumExplanation := explainerMap["flat_vs_cum"]
 				flameGraphExplanation := explainerMap["flamegraph"]
@@ -777,17 +779,17 @@ func (m model) View() string {
 	if m.mode == flameGraphView {
 		if m.flameGraphFocus != m.flameGraphRoot {
 			statusText = m.styles.Status.Render(
-				"F1 help | esc zoom out | enter zoom in | f exit flame | q quit",
+				"F1/? help | esc zoom out | enter zoom in | f exit flame | q quit",
 			)
 		} else {
 			statusText = m.styles.Status.Render(
-				"F1 help | enter zoom in | f exit flame | t view | q quit",
+				"F1/? help | enter zoom in | f exit flame | t view | q quit",
 			)
 		}
 	} else {
 		sortStr := m.currentSortString()
 		helpItems := []string{
-			"F1 help",
+			"F1/? help",
 			fmt.Sprintf("s sort (%s)", sortStr),
 			"t view",
 			"c mode",

@@ -2,7 +2,7 @@
 
 `pproftui` is a terminal-based UI for Go's `pprof` that makes profiling interactive, intuitive, and fast. It's designed to help you pinpoint performance issues without the context-switching of a web browser and to provide built-in explanations for profiling concepts.
 
-[![asciicast](https://asciinema.org/a/OV4Fr7Ob2aXDzKJphULlOlMbL.svg)](https://asciinema.org/a/OV4Fr7Ob2aXDzKJphULlOlMbL)
+![Demo](./demo.gif)
 
 ---
 

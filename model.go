@@ -1,7 +1,9 @@
+// model.go
 package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +35,14 @@ const (
 	sourceView viewMode = iota
 	graphView
 	flameGraphView
+)
+
+// pane tracks which UI pane is currently focused, used for keyboard navigation.
+type pane int
+
+const (
+	listPane pane = iota
+	flameGraphPane
 )
 
 type tickMsg time.Time
@@ -72,10 +82,12 @@ type model struct {
 	calleesList list.Model
 
 	// Flamegraph state
-	flameGraphRoot   *FlameNode
-	flameGraphFocus  *FlameNode
-	flameGraphHover  *FlameNode
-	flameGraphLayout *[]FlameNodeRenderInfo
+	flameGraphRoot     *FlameNode
+	flameGraphFocus    *FlameNode
+	flameGraphSelected *FlameNode // The user-selected node in the flame graph for keyboard nav
+	flameGraphHover    *FlameNode
+	flameGraphLayout   *[]FlameNodeRenderInfo
+	paneFocus          pane // Tracks which pane (list or flamegraph) has focus.
 
 	// General State
 	width       int
@@ -103,23 +115,25 @@ func newModel(data *ProfileData, sourceInfo string) model {
 	isDiff := strings.HasPrefix(sourceInfo, "Diff:")
 
 	m := model{
-		profileData:      data,
-		currentViewIndex: 0,
-		sourceInfo:       sourceInfo,
-		isDiffMode:       isDiff,
-		showProjectOnly:  false,
-		mode:             sourceView,
-		sort:             byFlat,
-		layoutIndex:      0,
-		helpView:         viewport.New(0, 0),
-		showHelp:         false,
-		mainList:         list.New(nil, list.NewDefaultDelegate(), 0, 0),
-		callersList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
-		calleesList:      list.New(nil, list.NewDefaultDelegate(), 0, 0),
-		source:           viewport.New(0, 0),
-		styles:           styles,
-		flameGraphLayout: &[]FlameNodeRenderInfo{},
-		isPaused:         false, // Default to not paused
+		profileData:        data,
+		currentViewIndex:   0,
+		sourceInfo:         sourceInfo,
+		isDiffMode:         isDiff,
+		showProjectOnly:    false,
+		mode:               sourceView,
+		sort:               byFlat,
+		layoutIndex:        0,
+		helpView:           viewport.New(0, 0),
+		showHelp:           false,
+		mainList:           list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		callersList:        list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		calleesList:        list.New(nil, list.NewDefaultDelegate(), 0, 0),
+		source:             viewport.New(0, 0),
+		styles:             styles,
+		flameGraphLayout:   &[]FlameNodeRenderInfo{},
+		isPaused:           false, // Default to not paused
+		paneFocus:          listPane,
+		flameGraphSelected: nil,
 	}
 	m.source.Style = styles.Source
 
@@ -310,6 +324,7 @@ func (m *model) setActiveView() {
 	m.flameGraphRoot = nil
 	m.flameGraphFocus = nil
 	m.flameGraphHover = nil
+	m.flameGraphSelected = nil
 	*m.flameGraphLayout = nil
 	m.resortAndSetList()
 }
@@ -577,6 +592,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// Handle keys differently if flame graph pane has focus.
+		if m.mode == flameGraphView && m.paneFocus == flameGraphPane {
+			if m.flameGraphSelected == nil {
+				// If nothing is selected (e.g., first focus), select the focus/root node.
+				m.flameGraphSelected = m.flameGraphFocus
+				m.syncListToFlameGraphSelection()
+				return m, nil
+			}
+
+			switch key := msg.String(); key {
+			case "tab":
+				m.paneFocus = listPane // Switch focus back to the list
+				m.flameGraphSelected = nil
+				return m, nil
+			case "up", "k", "down", "j", "left", "h", "right", "l":
+				m.navigateFlameGraph(key)
+				return m, nil
+			}
+		}
+
 		if m.mainList.FilterState() != list.Filtering {
 			switch msg.String() {
 			case " ": // Spacebar to pause/resume
@@ -603,6 +638,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "ctrl+c", "q":
 				return m, tea.Quit
+
+			case "tab": // Handle tab for focus switching
+				if m.mode == flameGraphView {
+					// This will only be reached if paneFocus is listPane
+					m.paneFocus = flameGraphPane
+					// Set initial selection to the node that corresponds to the list item
+					selected, ok := m.mainList.SelectedItem().(listItem)
+					if ok {
+						m.flameGraphSelected = findNodeByName(m.flameGraphRoot, selected.node.Name)
+					} else {
+						// Fallback to the focus node if list has no selection
+						m.flameGraphSelected = m.flameGraphFocus
+					}
+					return m, nil
+				}
+
 			case "t":
 				if m.profileData != nil && len(m.profileData.Views) > 0 {
 					m.currentViewIndex = (m.currentViewIndex + 1) % len(m.profileData.Views)
@@ -618,6 +669,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.mode = sourceView
 				}
+				m.paneFocus = listPane // Reset focus on mode change
 				return m, nil
 			case "s":
 				m.sort = (m.sort + 1) % 3 // Cycle through the 3 sort orders
@@ -631,6 +683,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.mode = sourceView // Toggle back
 					m.flameGraphRoot = nil
 					m.flameGraphFocus = nil
+					m.flameGraphSelected = nil
+					m.paneFocus = listPane // Reset focus on leaving flame view
 				} else {
 					m.mode = flameGraphView
 					m.rebuildFlameGraph()
@@ -638,11 +692,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "enter":
 				if m.mode == flameGraphView {
-					selected, ok := m.mainList.SelectedItem().(listItem)
-					if ok && m.flameGraphRoot != nil {
-						if targetNode := findNodeByName(m.flameGraphRoot, selected.node.Name); targetNode != nil {
-							m.flameGraphFocus = targetNode
+					var nodeToFocus *FlameNode
+					if m.paneFocus == flameGraphPane && m.flameGraphSelected != nil {
+						// If focus is on the graph, 'enter' zooms into the keyboard-selected node
+						nodeToFocus = m.flameGraphSelected
+					} else {
+						// Otherwise, it zooms into the list-selected node (original behavior)
+						selected, ok := m.mainList.SelectedItem().(listItem)
+						if ok && m.flameGraphRoot != nil {
+							nodeToFocus = findNodeByName(m.flameGraphRoot, selected.node.Name)
 						}
+					}
+
+					if nodeToFocus != nil {
+						m.flameGraphFocus = nodeToFocus
+						// After zooming, the new focus becomes the selected node
+						m.flameGraphSelected = m.flameGraphFocus
+						m.syncListToFlameGraphSelection()
 					}
 					return m, nil
 				}
@@ -654,6 +720,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.flameGraphFocus = m.flameGraphRoot
 					}
+					// After zooming out, the new focus becomes the selected node
+					m.flameGraphSelected = m.flameGraphFocus
+					m.syncListToFlameGraphSelection()
 					return m, nil
 				}
 			case "r":
@@ -676,6 +745,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.mainList, _ = m.mainList.Update(msg)
 	if beforeIndex != m.mainList.Index() {
 		m.updateChildPanes()
+		// When list selection changes, update the graph selection if graph is not focused
+		if m.mode == flameGraphView && m.paneFocus == listPane {
+			m.flameGraphSelected = nil
+		}
 	}
 
 	// Also update child lists if in graph view
@@ -689,11 +762,130 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// findNodeRenderInfo finds the layout information for a given flame graph node.
+func (m *model) findNodeRenderInfo(targetNode *FlameNode) (FlameNodeRenderInfo, bool) {
+	if targetNode == nil || m.flameGraphLayout == nil {
+		return FlameNodeRenderInfo{}, false
+	}
+	for _, info := range *m.flameGraphLayout {
+		if info.Node == targetNode {
+			return info, true
+		}
+	}
+	return FlameNodeRenderInfo{}, false
+}
+
+// navigateFlameGraph handles the spatial navigation within the flame graph view.
+func (m *model) navigateFlameGraph(direction string) {
+	currentInfo, ok := m.findNodeRenderInfo(m.flameGraphSelected)
+	if !ok {
+		return // Cannot navigate if current selection isn't rendered
+	}
+
+	var nextNode *FlameNode
+
+	switch direction {
+	case "up", "k":
+		// Navigate to parent, but not above the current focus point
+		if m.flameGraphSelected.Parent != nil && m.flameGraphSelected != m.flameGraphFocus {
+			nextNode = m.flameGraphSelected.Parent
+		}
+
+	case "down", "j":
+		targetY := currentInfo.Y + 1
+		centerX := currentInfo.X + currentInfo.Width/2
+		var bestMatch *FlameNodeRenderInfo
+		minDist := math.MaxInt32
+
+		// Find the node on the row below that is closest to the center of the current node.
+		for i := range *m.flameGraphLayout {
+			candidateInfo := &(*m.flameGraphLayout)[i]
+			if candidateInfo.Y == targetY {
+				// Check if the center of the current node falls within the candidate's bounds.
+				if centerX >= candidateInfo.X && centerX < candidateInfo.X+candidateInfo.Width {
+					bestMatch = candidateInfo
+					break // Perfect match found.
+				}
+				// If not a direct hit, find the closest one as a fallback.
+				dist := min(abs(int64(centerX-candidateInfo.X)), abs(int64(centerX-(candidateInfo.X+candidateInfo.Width-1))))
+				if dist < int64(minDist) {
+					minDist = int(dist)
+					bestMatch = candidateInfo
+				}
+			}
+		}
+		if bestMatch != nil {
+			nextNode = bestMatch.Node
+		}
+
+	case "left", "h":
+		targetY := currentInfo.Y
+		var bestMatch *FlameNodeRenderInfo
+		max_x := -1
+
+		// Find the node on the same row, to the left, with the largest X coord (closest).
+		for i := range *m.flameGraphLayout {
+			candidateInfo := &(*m.flameGraphLayout)[i]
+			if candidateInfo.Y == targetY && candidateInfo.X < currentInfo.X {
+				if candidateInfo.X > max_x {
+					max_x = candidateInfo.X
+					bestMatch = candidateInfo
+				}
+			}
+		}
+		if bestMatch != nil {
+			nextNode = bestMatch.Node
+		}
+
+	case "right", "l":
+		targetY := currentInfo.Y
+		var bestMatch *FlameNodeRenderInfo
+		min_x := math.MaxInt32
+
+		// Find the node on the same row, to the right, with the smallest X coord (closest).
+		for i := range *m.flameGraphLayout {
+			candidateInfo := &(*m.flameGraphLayout)[i]
+			if candidateInfo.Y == targetY && candidateInfo.X > currentInfo.X {
+				if candidateInfo.X < min_x {
+					min_x = candidateInfo.X
+					bestMatch = candidateInfo
+				}
+			}
+		}
+		if bestMatch != nil {
+			nextNode = bestMatch.Node
+		}
+	}
+
+	if nextNode != nil {
+		m.flameGraphSelected = nextNode
+		m.syncListToFlameGraphSelection()
+	}
+}
+
 func (m *model) rebuildFlameGraph() {
 	currentView := m.profileData.Views[m.currentViewIndex]
 	m.flameGraphRoot = BuildFlameGraph(m.profileData.RawPprof, m.currentViewIndex, currentView.Unit)
 	// Reset focus to the root of the new graph
 	m.flameGraphFocus = m.flameGraphRoot
+	// If the graph pane has focus, reset selection to the new root as well
+	if m.paneFocus == flameGraphPane {
+		m.flameGraphSelected = m.flameGraphRoot
+	}
+}
+
+// syncListToFlameGraphSelection finds the item in the mainList that corresponds
+// to the currently selected flame graph node and selects it.
+func (m *model) syncListToFlameGraphSelection() {
+	if m.flameGraphSelected == nil {
+		return
+	}
+	for i, item := range m.mainList.Items() {
+		if li, ok := item.(listItem); ok && li.node.Name == m.flameGraphSelected.Name {
+			m.mainList.Select(i)
+			break
+		}
+	}
 }
 
 func (m model) View() string {
@@ -708,15 +900,37 @@ func (m model) View() string {
 	header := m.renderDiagnosticHeader()
 	var rightPane string
 
+	// Define styles for panes, to be modified based on focus
+	listStyle := m.styles.List
+	sourceStyle := m.styles.Source
+	activeBorderColor := lipgloss.Color("82") // A bright cyan for focus
+
+	if m.mode == flameGraphView {
+		if m.paneFocus == listPane {
+			listStyle = listStyle.BorderForeground(activeBorderColor)
+		} else { // flameGraphPane has focus
+			sourceStyle = sourceStyle.BorderForeground(activeBorderColor)
+		}
+	}
+
 	if m.mode == sourceView {
-		rightPane = m.styles.Source.Render(m.source.View())
+		rightPane = sourceStyle.Render(m.source.View())
 	} else if m.mode == graphView {
 		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
 	} else {
-		var viewNode *FlameNode
-		selected, ok := m.mainList.SelectedItem().(listItem)
-		if ok {
-			viewNode = findNodeByName(m.flameGraphRoot, selected.node.Name)
+		var listSelectedNode *FlameNode
+		if selected, ok := m.mainList.SelectedItem().(listItem); ok {
+			listSelectedNode = findNodeByName(m.flameGraphRoot, selected.node.Name)
+		}
+
+		// The "active" selection passed to the renderer depends on which pane has focus.
+		var activeSelection *FlameNode
+		if m.paneFocus == flameGraphPane {
+			// If navigating the graph, the keyboard selection is king.
+			activeSelection = m.flameGraphSelected
+		} else {
+			// Otherwise, the selection is driven by the list.
+			activeSelection = listSelectedNode
 		}
 
 		rightPaneWidth := m.source.Width
@@ -728,7 +942,8 @@ func (m model) View() string {
 		// Render the graph and get layout info for hit detection
 		var renderedGraph string
 		var newLayout []FlameNodeRenderInfo
-		renderedGraph, newLayout = RenderFlameGraph(m.flameGraphRoot, m.flameGraphFocus, viewNode, m.flameGraphHover, rightPaneWidth, totalValue)
+		// NOTE: The signature for RenderFlameGraph must be updated to accept `activeSelection`.
+		renderedGraph, newLayout = RenderFlameGraph(m.flameGraphRoot, m.flameGraphFocus, activeSelection, m.flameGraphHover, rightPaneWidth, totalValue)
 		*m.flameGraphLayout = newLayout // Update layout info in the model
 
 		// Prepare hover details string
@@ -770,20 +985,21 @@ func (m model) View() string {
 			}
 		}
 
-		rightPane = m.styles.Source.Render(finalRender.String())
+		rightPane = sourceStyle.Render(finalRender.String())
 	}
 
-	panes := lipgloss.JoinHorizontal(lipgloss.Top, m.styles.List.Render(m.mainList.View()), rightPane)
+	panes := lipgloss.JoinHorizontal(lipgloss.Top, listStyle.Render(m.mainList.View()), rightPane)
 
 	var statusText string
 	if m.mode == flameGraphView {
+		navHelp := "tab focus | ←↑↓→ nav | enter zoom"
 		if m.flameGraphFocus != m.flameGraphRoot {
 			statusText = m.styles.Status.Render(
-				"F1/? help | esc zoom out | enter zoom in | f exit flame | q quit",
+				fmt.Sprintf("F1/? help | esc zoom out | %s | f exit flame | q quit", navHelp),
 			)
 		} else {
 			statusText = m.styles.Status.Render(
-				"F1/? help | enter zoom in | f exit flame | t view | q quit",
+				fmt.Sprintf("F1/? help | %s | f exit flame | t view | q quit", navHelp),
 			)
 		}
 	} else {
@@ -831,6 +1047,13 @@ func abs(x int64) int64 {
 		return -x
 	}
 	return x
+}
+
+func min(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (m model) renderDiagnosticHeader() string {

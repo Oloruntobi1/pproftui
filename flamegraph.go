@@ -1,3 +1,4 @@
+// flamegraph.go
 package main
 
 import (

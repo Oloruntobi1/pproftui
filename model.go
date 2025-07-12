@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -42,6 +43,7 @@ type pane int
 
 const (
 	listPane pane = iota
+	sourceCodePane
 	flameGraphPane
 )
 
@@ -640,6 +642,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 
 			case "tab": // Handle tab for focus switching
+				if m.mode == sourceView {
+					switch m.paneFocus {
+					case sourceCodePane:
+						m.paneFocus = listPane
+					case listPane:
+						m.paneFocus = sourceCodePane
+					}
+					return m, nil
+				}
+
 				if m.mode == flameGraphView {
 					// This will only be reached if paneFocus is listPane
 					m.paneFocus = flameGraphPane
@@ -738,6 +750,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+	}
+
+	if m.mode == sourceView && m.paneFocus == sourceCodePane {
+		m.source, _ = m.source.Update(msg)
+		return m, tea.Batch(cmds...)
 	}
 
 	// This block handles updates for navigation and child panes.
@@ -914,7 +931,12 @@ func (m model) View() string {
 	}
 
 	if m.mode == sourceView {
-		rightPane = sourceStyle.Render(m.source.View())
+		if m.paneFocus == sourceCodePane {
+			rightPane = sourceStyle.BorderForeground(activeBorderColor).Render(m.source.View())
+		} else {
+			listStyle = listStyle.BorderForeground(activeBorderColor)
+			rightPane = sourceStyle.Render(m.source.View())
+		}
 	} else if m.mode == graphView {
 		rightPane = lipgloss.JoinVertical(lipgloss.Left, m.callersList.View(), m.calleesList.View())
 	} else {
@@ -1011,9 +1033,16 @@ func (m model) View() string {
 			"c mode",
 			"p project",
 		}
+
 		if !m.isDiffMode {
 			helpItems = append(helpItems, "f flame")
 		}
+
+		if m.mode == sourceView {
+			// Add hint for focus changing after help hint.
+			helpItems = slices.Insert(helpItems, 1, "tab focus", "←↑↓→ nav")
+		}
+
 		helpItems = append(helpItems, "r resize", "q quit")
 		statusText = m.styles.Status.Render(strings.Join(helpItems, " | "))
 	}

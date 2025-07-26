@@ -213,8 +213,9 @@ func (i listItem) Description() string {
 
 	// Case 2: Diff mode
 	if isDiff {
-		flatStr := formatDelta(i.node.FlatDelta, i.unit, i.styles)
-		cumStr := formatDelta(i.node.CumDelta, i.unit, i.styles)
+		// Use enhanced formatting with ratios
+		flatStr := formatRatioDisplay(i.node.FlatRatio, i.node.FlatDelta, i.unit, i.styles)
+		cumStr := formatRatioDisplay(i.node.CumRatio, i.node.CumDelta, i.unit, i.styles)
 		return fmt.Sprintf("own Δ: %s | total Δ: %s", flatStr, cumStr)
 	}
 
@@ -1071,11 +1072,121 @@ func formatDelta(value int64, unit string, s *Styles) string {
 	return formattedVal
 }
 
+// formatRatioDisplay formats a delta with ratio information using pre-calculated ratio.
+// This is used when we have the ratio already calculated in the data structure.
+func formatRatioDisplay(ratio float64, delta int64, unit string, s *Styles) string {
+	// Handle special cases first
+	if math.IsInf(ratio, 1) {
+		// New function
+		formattedVal := formatValue(delta, unit) // delta is the after value for new functions
+		return s.DiffPositive.Render(fmt.Sprintf("+%s (new)", formattedVal))
+	}
+	if ratio == 0.0 {
+		// Removed function
+		formattedVal := formatValue(-delta, unit) // delta is negative for removed functions
+		return s.DiffNegative.Render(fmt.Sprintf("-%s (removed)", formattedVal))
+	}
+
+	// Format the basic delta
+	deltaStr := formatDelta(delta, unit, s)
+
+	// Determine if we should show ratio or percentage
+	if shouldShowRatio(ratio) {
+		ratioStr := formatRatio(ratio, unit)
+		return fmt.Sprintf("%s (%s)", deltaStr, ratioStr)
+	} else {
+		// Show percentage for smaller changes
+		percentStr := formatPercentageChange(ratio)
+		return fmt.Sprintf("%s (%s)", deltaStr, percentStr)
+	}
+}
+
 func abs(x int64) int64 {
 	if x < 0 {
 		return -x
 	}
 	return x
+}
+
+// calculateRatio computes the performance ratio between before and after values.
+// Returns the ratio as a float64 where:
+// - Values > 1.0 indicate the after value is larger (slower/more)
+// - Values < 1.0 indicate the after value is smaller (faster/less)
+// - Returns math.Inf(1) for new functions (before=0, after>0)
+// - Returns 0.0 for removed functions (before>0, after=0)
+// - Returns 1.0 for no change (before=after=0 or before=after)
+func calculateRatio(before, after int64) float64 {
+	// Handle edge cases
+	if before == 0 && after == 0 {
+		return 1.0 // No change
+	}
+	if before == 0 {
+		return math.Inf(1) // New function - infinite increase
+	}
+	if after == 0 {
+		return 0.0 // Removed function - complete reduction
+	}
+
+	// Calculate ratio
+	return float64(after) / float64(before)
+}
+
+// formatRatio formats a ratio into human-readable text like "2.0x faster" or "1.5x slower".
+// The interpretation depends on the metric type:
+// - For time-based metrics (CPU): lower is better, so ratio < 1.0 means "faster"
+// - For memory/count metrics: lower is better, so ratio < 1.0 means "less"
+func formatRatio(ratio float64, unit string) string {
+	if math.IsInf(ratio, 1) {
+		return "new"
+	}
+	if ratio == 0.0 {
+		return "removed"
+	}
+	if ratio == 1.0 {
+		return "unchanged"
+	}
+
+	// Determine if this is a time-based metric
+	isTimeBased := unit == "nanoseconds"
+
+	if ratio > 1.0 {
+		// After value is larger than before
+		if isTimeBased {
+			return fmt.Sprintf("%.1fx slower", ratio)
+		} else {
+			return fmt.Sprintf("%.1fx more", ratio)
+		}
+	} else {
+		// After value is smaller than before
+		inverseRatio := 1.0 / ratio
+		if isTimeBased {
+			return fmt.Sprintf("%.1fx faster", inverseRatio)
+		} else {
+			return fmt.Sprintf("%.1fx less", inverseRatio)
+		}
+	}
+}
+
+// shouldShowRatio determines if we should show ratio (for significant changes >1.1x)
+// or percentage (for smaller changes).
+func shouldShowRatio(ratio float64) bool {
+	if math.IsInf(ratio, 0) || ratio == 0.0 {
+		return true // Always show for new/removed
+	}
+	// Show ratio for changes >10% (ratio > 1.1 or ratio < 0.9)
+	return ratio > 1.1 || ratio < 0.9
+}
+
+// formatPercentageChange formats small changes as percentages like "+5%" or "-3%".
+func formatPercentageChange(ratio float64) string {
+	if ratio == 1.0 {
+		return "0%"
+	}
+	percentage := (ratio - 1.0) * 100
+	if percentage > 0 {
+		return fmt.Sprintf("+%.0f%%", percentage)
+	}
+	return fmt.Sprintf("%.0f%%", percentage)
 }
 
 func min(a, b int64) int64 {

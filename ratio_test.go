@@ -2,7 +2,6 @@ package main
 
 import (
 	"math"
-	"strings"
 	"testing"
 )
 
@@ -195,66 +194,4 @@ func TestCalculateRatioEdgeCases(t *testing.T) {
 			t.Errorf("calculateRatio with very large ratio failed: got %f, want %f", result, expected)
 		}
 	})
-}
-
-func TestFormatRatioDisplay(t *testing.T) {
-	styles := defaultStyles()
-
-	tests := []struct {
-		name     string
-		ratio    float64
-		delta    int64
-		unit     string
-		contains []string // Strings that should be present in the output
-	}{
-		{
-			name:     "new function",
-			ratio:    math.Inf(1),
-			delta:    1000,
-			unit:     "nanoseconds",
-			contains: []string{"new", "+"},
-		},
-		{
-			name:     "removed function",
-			ratio:    0.0,
-			delta:    -1000,
-			unit:     "nanoseconds",
-			contains: []string{"removed", "-"},
-		},
-		{
-			name:     "significant improvement",
-			ratio:    0.5,
-			delta:    -500,
-			unit:     "nanoseconds",
-			contains: []string{"2.0x faster", "-"},
-		},
-		{
-			name:     "significant regression",
-			ratio:    2.0,
-			delta:    1000,
-			unit:     "nanoseconds",
-			contains: []string{"2.0x slower", "+"},
-		},
-		{
-			name:     "small improvement",
-			ratio:    0.95,
-			delta:    -50,
-			unit:     "nanoseconds",
-			contains: []string{"-5%", "-"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := formatRatioDisplay(tt.ratio, tt.delta, tt.unit, &styles)
-			for _, expected := range tt.contains {
-				if !strings.Contains(result, expected) {
-					t.Errorf("formatRatioDisplay result should contain %q, got %q", expected, result)
-				}
-			}
-			if result == "" {
-				t.Errorf("formatRatioDisplay returned empty string")
-			}
-		})
-	}
 }

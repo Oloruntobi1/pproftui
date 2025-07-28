@@ -250,16 +250,16 @@ func DiffPprofFiles(beforeReader, afterReader io.Reader) (*ProfileData, error) {
 		}
 
 		// Create function signature to node mapping for stable matching
-		// Function signature: "name|filename|startline"
+		// Function signature: "name|filename" (excluding startline to avoid duplicates from inlining)
 		beforeFuncMap := make(map[string]*FuncNode)
 		for _, node := range beforeView.Nodes {
-			sig := fmt.Sprintf("%s|%s|%d", node.Name, node.FileName, node.StartLine)
+			sig := fmt.Sprintf("%s|%s", node.Name, node.FileName)
 			beforeFuncMap[sig] = node
 		}
 
 		afterFuncMap := make(map[string]*FuncNode)
 		for _, node := range afterView.Nodes {
-			sig := fmt.Sprintf("%s|%s|%d", node.Name, node.FileName, node.StartLine)
+			sig := fmt.Sprintf("%s|%s", node.Name, node.FileName)
 			afterFuncMap[sig] = node
 		}
 

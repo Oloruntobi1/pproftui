@@ -213,10 +213,9 @@ func (i listItem) Description() string {
 
 	// Case 2: Diff mode
 	if isDiff {
-		// Use enhanced formatting with ratios
-		flatStr := formatRatioDisplay(i.node.FlatRatio, i.node.FlatDelta, i.unit, i.styles)
-		cumStr := formatRatioDisplay(i.node.CumRatio, i.node.CumDelta, i.unit, i.styles)
-		return fmt.Sprintf("own Δ: %s | total Δ: %s", flatStr, cumStr)
+		flatStr := formatDiffImpact(i.node.FlatRatio, i.node.FlatDelta, i.unit, i.styles, i.TotalValue)
+		cumStr := formatDiffImpact(i.node.CumRatio, i.node.CumDelta, i.unit, i.styles, i.TotalValue)
+		return fmt.Sprintf("own: %s | total: %s", flatStr, cumStr)
 	}
 
 	// Case 3: Main list descriptions
@@ -677,6 +676,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "c":
+				if m.isDiffMode {
+					return m, nil
+				}
 				if m.mode == sourceView {
 					m.mode = graphView
 				} else {
@@ -1031,12 +1033,11 @@ func (m model) View() string {
 			"F1/? help",
 			fmt.Sprintf("s sort (%s)", sortStr),
 			"t view",
-			"c mode",
 			"p project",
 		}
 
 		if !m.isDiffMode {
-			helpItems = append(helpItems, "f flame")
+			helpItems = append(helpItems, "c mode", "f flame")
 		}
 
 		if m.mode == sourceView {
@@ -1072,32 +1073,54 @@ func formatDelta(value int64, unit string, s *Styles) string {
 	return formattedVal
 }
 
-// formatRatioDisplay formats a delta with ratio information using pre-calculated ratio.
-// This is used when we have the ratio already calculated in the data structure.
-func formatRatioDisplay(ratio float64, delta int64, unit string, s *Styles) string {
-	// Handle special cases first
+// formatDiffImpact formats diff changes with impact-focused language and smart filtering
+func formatDiffImpact(ratio float64, delta int64, unit string, s *Styles, totalValue int64) string {
+	// Calculate impact as percentage of total
+	impactPercent := 0.0
+	if totalValue != 0 {
+		impactPercent = (float64(abs(delta)) / float64(abs(totalValue))) * 100
+	}
+
+	// Handle special cases with clearer language
 	if math.IsInf(ratio, 1) {
-		// New function
-		formattedVal := formatValue(delta, unit) // delta is the after value for new functions
-		return s.DiffPositive.Render(fmt.Sprintf("+%s (new)", formattedVal))
+		formattedVal := formatValue(delta, unit)
+		if impactPercent >= 1.0 {
+			return s.DiffPositive.Render(fmt.Sprintf("+%s (introduced)", formattedVal))
+		} else {
+			return s.DiffPositive.Render(fmt.Sprintf("+%s (minor addition)", formattedVal))
+		}
 	}
 	if ratio == 0.0 {
-		// Removed function
-		formattedVal := formatValue(-delta, unit) // delta is negative for removed functions
-		return s.DiffNegative.Render(fmt.Sprintf("-%s (removed)", formattedVal))
+		formattedVal := formatValue(-delta, unit)
+		if impactPercent >= 1.0 {
+			return s.DiffNegative.Render(fmt.Sprintf("-%s (eliminated)", formattedVal))
+		} else {
+			return s.DiffNegative.Render(fmt.Sprintf("-%s (minor removal)", formattedVal))
+		}
 	}
 
-	// Format the basic delta
 	deltaStr := formatDelta(delta, unit, s)
 
-	// Determine if we should show ratio or percentage
-	if shouldShowRatio(ratio) {
-		ratioStr := formatRatio(ratio, unit)
-		return fmt.Sprintf("%s (%s)", deltaStr, ratioStr)
+	// Show impact level for significant changes
+	if impactPercent >= 5.0 {
+		if shouldShowRatio(ratio) {
+			ratioStr := formatRatio(ratio, unit)
+			return fmt.Sprintf("%s (%s, major impact)", deltaStr, ratioStr)
+		} else {
+			percentStr := formatPercentageChange(ratio)
+			return fmt.Sprintf("%s (%s, major impact)", deltaStr, percentStr)
+		}
+	} else if impactPercent >= 1.0 {
+		if shouldShowRatio(ratio) {
+			ratioStr := formatRatio(ratio, unit)
+			return fmt.Sprintf("%s (%s)", deltaStr, ratioStr)
+		} else {
+			percentStr := formatPercentageChange(ratio)
+			return fmt.Sprintf("%s (%s)", deltaStr, percentStr)
+		}
 	} else {
-		// Show percentage for smaller changes
-		percentStr := formatPercentageChange(ratio)
-		return fmt.Sprintf("%s (%s)", deltaStr, percentStr)
+		// Minor changes - just show the delta
+		return fmt.Sprintf("%s (minor)", deltaStr)
 	}
 }
 

@@ -118,10 +118,39 @@ This layout is known as an "icicle graph", and it's now common in tools like ppr
 
 Use this to quickly understand which code paths consume the most resources and how they are nested.`,
 	},
+
+	"diff": {
+		Title: "Profile Diff Comparison",
+		Description: `You're comparing two profiles to see what changed between them.
+
+How to read the results:
+- Green (+) = More time/memory used in the second profile (regression)
+- Red (-) = Less time/memory used in the second profile (improvement)
+
+Impact levels:
+- "major impact" = Changes affecting >5% of total time/memory
+- Regular changes = 1-5% impact
+- "minor" = <1% impact (often just noise)
+
+Special indicators:
+- "introduced" = New functions that appeared
+- "eliminated" = Functions that disappeared
+- "2.0x faster/slower" = Performance ratio changes
+
+Tips:
+- Focus on "major impact" items first
+- Press 'p' to show only your project code
+- Look for patterns: did one slow function get replaced by a faster one?`,
+	},
 }
 
 // getExplanationForView takes a view name like "alloc_space (bytes)" and finds the right help text.
 func getExplanationForView(viewName string) Explanation {
+	// Check for diff mode first
+	if strings.HasPrefix(viewName, "Diff:") {
+		return explainerMap["diff"]
+	}
+
 	// Look for a keyword in the view name
 	if strings.Contains(viewName, "cpu") || strings.Contains(viewName, "samples") {
 		return explainerMap["cpu"]
